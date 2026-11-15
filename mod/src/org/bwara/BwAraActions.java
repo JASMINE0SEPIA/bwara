@@ -179,7 +179,7 @@ public final class BwAraActions implements ActionProvider {
             Path directory = take;
             var session = onUi(() -> {
                 // 等素材准备好再确认目标还在。检查、启动窗口和登记会话放在同一个 UI 回合。
-                if (gEH.xw3().Anf(selection.project()) == null || !selection.containsEvent())
+                if (gEH.xw3().Anf(selection.project()) == null || !selection.matches(selection.asset()))
                     return null;
                 Process process = new ProcessBuilder(command).directory(directory.toFile())
                     .redirectError(directory.resolve(LOG).toFile()).start();
@@ -320,7 +320,7 @@ public final class BwAraActions implements ActionProvider {
 
     private record ProjectMedia(Path path, long frames) {}
 
-    private enum End { EVENT_REMOVED, PROJECT_CLOSED }
+    private enum End { TARGET_CHANGED, PROJECT_CLOSED }
 
     private static final class LiveSelection {
         // 一次会话只认一个工程、一个事件。工程对象只在 UI 线程碰，文件工作交给后台。
@@ -376,7 +376,7 @@ public final class BwAraActions implements ActionProvider {
                     onUi(() -> {
                         if (hasTarget())
                             request.fail(error);
-                        else if (end == End.EVENT_REMOVED)
+                        else if (end == End.TARGET_CHANGED)
                             request.resume().run();
                         return null;
                     }).get();
@@ -423,16 +423,16 @@ public final class BwAraActions implements ActionProvider {
         }
 
         private boolean hasTarget() {
-            // 播放跟随会定期来问，哪怕停着没改音，删了事件也能收掉窗口。
-            if (end == null && !selection.containsEvent())
-                stop(End.EVENT_REMOVED);
+            // 播放跟随会定期来问，停着时删事件或换素材也能收掉窗口。
+            if (end == null && !selection.matches(current))
+                stop(End.TARGET_CHANGED);
             return end == null;
         }
 
         private void stop(End reason) {
             boolean alreadyStopping = end != null;
             end = reason;
-            // 删事件只关编辑器，已经排队的工程保存还要继续。工程真关了才清队列。
+            // 编辑对象变了，已经排队的工程保存还要继续。工程真关了才清队列。
             if (reason == End.PROJECT_CLOSED) {
                 active = null;
                 saves.clear();
@@ -497,7 +497,6 @@ public final class BwAraActions implements ActionProvider {
             Path media = onUi(() -> {
                 if (!hasTarget() || selection.project().IDq())
                     return null;
-                selection.checkCurrent(current);
                 return selection.mediaDirectory();
             }).get();
             if (media == null)
@@ -564,14 +563,8 @@ public final class BwAraActions implements ActionProvider {
                         continue;
                     double seconds = Double.parseDouble(fields[1]);
                     onUi(() -> {
-                        if (active == this && hasTarget()) {
-                            try {
-                                selection.checkCurrent(current);
-                                selection.transportCommand(fields[0], seconds);
-                            } catch (IOException changed) {
-                                MOD.log(changed.getMessage());
-                            }
-                        }
+                        if (active == this && hasTarget())
+                            selection.transportCommand(fields[0], seconds);
                         return null;
                     }).get();
                 }
@@ -631,13 +624,14 @@ public final class BwAraActions implements ActionProvider {
         private void attach(ProjectMedia media) throws IOException {
             if (!selection.mediaDirectory().equals(media.path().getParent()))
                 throw new IOException("The project media folder moved. Try saving again.");
-            current = selection.apply(media.path(), current, media.frames());
+            // 我们自己发布的素材接着认，外面换进来的素材才结束旧会话。
+            current = selection.apply(media.path(), media.frames());
         }
 
         private TransportSnapshot transport() {
             if (!hasTarget())
                 return new TransportSnapshot(0, 0, null);
-            var sample = selection.transport(current);
+            var sample = selection.transport();
             return new TransportSnapshot(sample.mode(), sample.seconds(), DockPanel.bounds(selection.project()));
         }
     }
@@ -694,9 +688,7 @@ public final class BwAraActions implements ActionProvider {
     }
 
     private record Selection(CmH project, DyF event, poA region, fRJ asset, Path source) {
-        TransportSnapshot transport(fRJ current) {
-            if (region.GKF() != current)
-                return new TransportSnapshot(0, 0, null);
+        TransportSnapshot transport() {
             var transport = project.jPe();
             double beat = transport.bcT().getDoubleValue();
             double localBeat = er.beI(beat, event);
@@ -747,22 +739,16 @@ public final class BwAraActions implements ActionProvider {
             return project.PJ3().Gef().toPath();
         }
 
-        private boolean containsEvent() {
-            // 移动和裁剪会改坐标，事件只要还在原片段里，会话就继续。
-            if (event.unz(CmH.class) != project)
+        private boolean matches(fRJ current) {
+            // 坐标可以变，会话认的是原片段里的事件和它当前应有的素材。
+            if (event.unz(CmH.class) != project || region.GKF() != current)
                 return false;
             try (Stream<?> regions = event.vws()) {
                 return regions.anyMatch(candidate -> candidate == region);
             }
         }
 
-        void checkCurrent(fRJ current) throws IOException {
-            if (!containsEvent() || region.GKF() != current)
-                throw new IOException("The original audio event or its source changed while Melodyne was open.");
-        }
-
-        fRJ apply(Path rendered, fRJ current, long frames) throws IOException {
-            checkCurrent(current);
+        fRJ apply(Path rendered, long frames) throws IOException {
             // 用 Bitwig 自己的导入器认文件，撤销栈里只换这个事件的素材引用。
             fRJ replacement = fRJ.beI(new Lpf(rendered.toFile()));
             final double expectedDuration = (double) frames / asset.byf();

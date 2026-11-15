@@ -6,7 +6,7 @@ With the audio engine active, right-click an Arranger audio event backed by a lo
 
 **Ctrl+S** in either window saves the edit. Bitwig's project-close prompt handles unsaved changes and closes Melodyne when the project closes. Keep the project media when moving the project. Reopen the editor from the same event to continue editing.
 
-You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. Deleting the bound event or its clip closes Melodyne. Save before deleting to keep the latest edits available if you undo the deletion. Close Melodyne before splitting, copying, replacing the source, or undoing changes to the event.
+You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. Deleting the bound event or its clip, or replacing the source, closes Melodyne. Save before deleting or replacing audio to keep the latest edits available if you undo the operation. Close Melodyne before splitting, copying, or undoing changes to the event.
 
 Melodyne follows Bitwig's transport. Use Space to start or stop Bitwig, or double-click the Melodyne ruler to play from that position. With Bitwig stopped, double-click the note editor background to audition through the Windows default output.
 
