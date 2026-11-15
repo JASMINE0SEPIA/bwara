@@ -103,8 +103,7 @@ public final class BwAraActions implements ActionProvider {
             throw new IOException("This version accepts local WAV sources.");
         if (project.PJ3() == null)
             throw new IOException("This Bitwig project has no media directory yet.");
-        return new Selection(project, event, region, asset, source,
-            event.ie(), event.oiY(), region.ie(), region.oiY());
+        return new Selection(project, event, region, asset, source);
     }
 
     private static DyF owningEvent(poA region) throws IOException {
@@ -674,11 +673,9 @@ public final class BwAraActions implements ActionProvider {
         Notifications.post(Severity.ERROR, "BwARA", error.getMessage() == null ? error.toString() : error.getMessage());
     }
 
-    private record Selection(CmH project, DyF event, poA region, fRJ asset, Path source,
-                             double startBeat, double endBeat,
-                             double regionStart, double regionEnd) {
+    private record Selection(CmH project, DyF event, poA region, fRJ asset, Path source) {
         TransportSnapshot transport(fRJ current) {
-            if (event.unz(CmH.class) != project || region.GKF() != current)
+            if (!isCurrent(current))
                 return new TransportSnapshot(0, 0, null);
             var transport = project.jPe();
             double beat = transport.bcT().getDoubleValue();
@@ -730,14 +727,18 @@ public final class BwAraActions implements ActionProvider {
             return project.PJ3().Gef().toPath();
         }
 
-        void checkCurrent(fRJ current) throws IOException {
-            if (event.unz(CmH.class) != project || event.ie() != startBeat || event.oiY() != endBeat
-                    || region.GKF() != current || region.ie() != regionStart || region.oiY() != regionEnd)
-                throw new IOException("The clip changed while the editor was open. The take was not applied.");
+        private boolean isCurrent(fRJ current) {
+            // 移动和裁剪会改坐标，修音仍然跟着同一个事件。换了事件或素材才要拦住。
+            if (event.unz(CmH.class) != project || region.GKF() != current)
+                return false;
             try (Stream<?> regions = event.vws()) {
-                if (regions.noneMatch(candidate -> candidate == region))
-                    throw new IOException("The original audio event is no longer in the clip.");
+                return regions.anyMatch(candidate -> candidate == region);
             }
+        }
+
+        void checkCurrent(fRJ current) throws IOException {
+            if (!isCurrent(current))
+                throw new IOException("The original audio event or its source changed while Melodyne was open.");
         }
 
         fRJ apply(Path rendered, fRJ current, long frames) throws IOException {
