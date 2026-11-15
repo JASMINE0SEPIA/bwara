@@ -90,11 +90,13 @@ public final class BwAraActions implements ActionProvider {
     }
 
     private static Selection capture(Object item) throws IOException {
-        DyF event = item instanceof DyF clip ? clip
-            : item instanceof poA region ? owningEvent(region) : null;
-        if (event == null || !(event.unz(CmH.class) instanceof CmH project))
+        poA region = item instanceof DyF clip ? onlyRegion(clip)
+            : item instanceof poA selected ? selected : null;
+        if (region == null)
             throw new IOException("Select a single Arranger audio clip.");
-        poA region = item instanceof poA selected ? selected : onlyRegion(event);
+        DyF event = owningClip(region);
+        if ((item instanceof DyF clip && event != clip) || !(event.unz(CmH.class) instanceof CmH project))
+            throw new IOException("Select a single Arranger audio clip.");
         fRJ asset = region.GKF();
         if (asset == null || asset.tWW() == null)
             throw new IOException("The region has no available audio file.");
@@ -106,12 +108,16 @@ public final class BwAraActions implements ActionProvider {
         return new Selection(project, event, region, asset, source);
     }
 
-    private static DyF owningEvent(poA region) throws IOException {
-        if (region.xDy() != null) {
-            try (Stream<?> references = region.xDy().zzi()) {
-                List<?> owners = references.filter(DyF.class::isInstance).limit(2).toList();
-                if (owners.size() == 1)
-                    return (DyF) owners.getFirst();
+    private static DyF owningClip(poA region) throws IOException {
+        // 共用一个 WAV 很正常；共用事件本身才会让一次改音传到别的片段。
+        var content = region.xDy();
+        if (content != null) {
+            try (Stream<?> references = content.zzi()) {
+                var owners = references.limit(2).toList();
+                if (owners.size() > 1)
+                    throw new IOException("This audio event is shared by several clips. Edit an independent clip instead.");
+                if (owners.size() == 1 && owners.getFirst() instanceof DyF clip)
+                    return clip;
             }
         }
         throw new IOException("Select an audio event in a unique Arranger clip.");
@@ -180,6 +186,8 @@ public final class BwAraActions implements ActionProvider {
             var session = onUi(() -> {
                 // 等素材准备好再确认目标还在。检查、启动窗口和登记会话放在同一个 UI 回合。
                 if (gEH.xw3().Anf(selection.project()) == null || !selection.matches(selection.asset()))
+                    return null;
+                if (owningClip(selection.region()) != selection.event())
                     return null;
                 Process process = new ProcessBuilder(command).directory(directory.toFile())
                     .redirectError(directory.resolve(LOG).toFile()).start();
