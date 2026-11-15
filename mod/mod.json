@@ -1,0 +1,75 @@
+{
+  "manifest_version": 2,
+  "mod": {
+    "id": "bwara",
+    "name": "Audio Clip: Edit with Melodyne",
+    "version": "0.1.0-dev.8",
+    "author": "BwARA",
+    "description": "Edits one Arranger audio event in Melodyne through ARA.",
+    "documentation": "readme"
+  },
+  "built_against": {
+    "bitwig_version": "6.1.7",
+    "platform": "windows",
+    "architecture": "x64"
+  },
+  "helper": {
+    "jar": "helper.jar",
+    "class": "org.bwara.ProjectSave"
+  },
+  "requires": [
+    {
+      "id": "action-menu-composition-framework",
+      "min_version": "0.8.0-dev.1"
+    },
+    {
+      "id": "notifications-framework"
+    },
+    {
+      "id": "panel-management-framework"
+    }
+  ],
+  "resources": {
+    "panel-icon": {
+      "kind": "file",
+      "path": "panel.svg",
+      "media_type": "image/svg+xml"
+    },
+    "readme": {
+      "kind": "file",
+      "path": "docs/use.md",
+      "media_type": "text/markdown"
+    },
+    "host": {
+      "kind": "file",
+      "path": "bwara-host.exe"
+    },
+    "engine-loader": {
+      "kind": "file",
+      "path": "bwara-engine-loader.exe"
+    },
+    "engine": {
+      "kind": "file",
+      "path": "bwara-engine.dll"
+    },
+    "takes": {
+      "kind": "directory",
+      "path": "takes",
+      "persistence": "created"
+    }
+  },
+  "registrations": [
+    {
+      "id": "actions",
+      "consumer": "action-menu-composition-framework",
+      "descriptor": "actions.properties",
+      "jar": "helper.jar"
+    },
+    {
+      "id": "panels",
+      "consumer": "panel-management-framework",
+      "descriptor": "panels.properties",
+      "jar": "helper.jar"
+    }
+  ]
+}
