@@ -178,9 +178,8 @@ public final class BwAraActions implements ActionProvider {
             command.add(Long.toString(PID));
             Path directory = take;
             var session = onUi(() -> {
-                // 检查工程、启动窗口、登记归属必须在同一个 UI 回合。
-                // 否则准备素材时工程关了，Melodyne 却姗姗来迟，成了无主窗口。
-                if (gEH.xw3().Anf(selection.project()) == null)
+                // 等素材准备好再确认目标还在。检查、启动窗口和登记会话放在同一个 UI 回合。
+                if (gEH.xw3().Anf(selection.project()) == null || !selection.containsEvent())
                     return null;
                 Process process = new ProcessBuilder(command).directory(directory.toFile())
                     .redirectError(directory.resolve(LOG).toFile()).start();
@@ -197,7 +196,7 @@ public final class BwAraActions implements ActionProvider {
             Thread commands = Thread.ofVirtual().name("BwARA editor commands").start(session::receiveTransport);
             try {
                 session.run();
-                if (!session.projectClosed && process.exitValue() != 0)
+                if (session.end == null && process.exitValue() != 0)
                     throw new IOException("Melodyne did not finish. See " + take.resolve(LOG));
                 preserveLog = false;
             } finally {
@@ -288,7 +287,7 @@ public final class BwAraActions implements ActionProvider {
 
     static boolean deferSave(CmH project, Runnable resume, Pv callback) {
         var session = active;
-        if (session == null || session.selection.project() != project || session.projectClosed)
+        if (session == null || session.selection.project() != project || session.end == End.PROJECT_CLOSED)
             return false;
         session.saves.add(new SaveRequest(resume, callback));
         return true;
@@ -296,7 +295,7 @@ public final class BwAraActions implements ActionProvider {
 
     static void prepareClose(CmH project) {
         var session = active;
-        if (session == null || session.selection.project() != project || session.projectClosed || project.np2())
+        if (session == null || session.selection.project() != project || project.np2() || !session.hasTarget())
             return;
         var modified = project.ERa().beI();
         if (!modified.getBoolValue() && session.hasPendingEdit())
@@ -306,7 +305,7 @@ public final class BwAraActions implements ActionProvider {
     static void closeEditor(CmH project) {
         var session = active;
         if (session != null && session.selection.project() == project)
-            session.projectDidClose();
+            session.stop(End.PROJECT_CLOSED);
     }
 
     private record SaveRequest(Runnable resume, Pv callback) {
@@ -321,6 +320,8 @@ public final class BwAraActions implements ActionProvider {
 
     private record ProjectMedia(Path path, long frames) {}
 
+    private enum End { EVENT_REMOVED, PROJECT_CLOSED }
+
     private static final class LiveSelection {
         // 一次会话只认一个工程、一个事件。工程对象只在 UI 线程碰，文件工作交给后台。
         private final Selection selection;
@@ -332,7 +333,7 @@ public final class BwAraActions implements ActionProvider {
         private fRJ current;
         private long closeCheckToken;
         private long storedRevision;
-        private volatile boolean projectClosed;
+        private volatile End end;
         // 后台线程拥有这些版本号；0 表示还没有，不是“第零次改音”。
         private long revision;      // 已通知引擎的版本
         private long proxyRevision; // 当前私有 WAV 对应的基准版本，供引擎核对 PCM
@@ -351,10 +352,10 @@ public final class BwAraActions implements ActionProvider {
         }
 
         private void run() throws Exception {
-            while (!projectClosed && editor.isAlive()) {
+            while (end == null && editor.isAlive()) {
                 if (Files.deleteIfExists(directory.resolve("save-shortcut"))) {
                     onUi(() -> {
-                        if (!projectClosed)
+                        if (end != End.PROJECT_CLOSED)
                             ProjectSave.fromEditor(selection.project());
                         return null;
                     }).get();
@@ -373,18 +374,22 @@ public final class BwAraActions implements ActionProvider {
                     consumePreview(saved);
                 } catch (Exception error) {
                     onUi(() -> {
-                        if (!projectClosed)
+                        if (hasTarget())
                             request.fail(error);
+                        else if (end == End.EVENT_REMOVED)
+                            request.resume().run();
                         return null;
                     }).get();
                 }
             }
-            if (projectClosed) {
+            if (end != null) {
                 if (!editor.waitFor(2, TimeUnit.SECONDS))
                     editor.destroyForcibly().waitFor();
-                return;
             }
-            checkpoint(latestPreview(), () -> {
+            if (end == End.PROJECT_CLOSED)
+                return;
+
+            checkpoint(end == null ? latestPreview() : 0, () -> {
                 active = null;
                 for (SaveRequest request; (request = saves.poll()) != null;)
                     request.resume().run();
@@ -417,15 +422,28 @@ public final class BwAraActions implements ActionProvider {
             return true;
         }
 
-        private void projectDidClose() {
-            // 只有工程真的关了才走这里。用户点“取消”时，窗口和会话都得原地等着。
-            projectClosed = true;
-            active = null;
-            saves.clear();
+        private boolean hasTarget() {
+            // 播放跟随会定期来问，哪怕停着没改音，删了事件也能收掉窗口。
+            if (end == null && !selection.containsEvent())
+                stop(End.EVENT_REMOVED);
+            return end == null;
+        }
+
+        private void stop(End reason) {
+            boolean alreadyStopping = end != null;
+            end = reason;
+            // 删事件只关编辑器，已经排队的工程保存还要继续。工程真关了才清队列。
+            if (reason == End.PROJECT_CLOSED) {
+                active = null;
+                saves.clear();
+            }
+            if (alreadyStopping)
+                return;
             try {
+                // 沿用宿主进程认识的信号，让它跳过最后一次渲染。
                 Files.createFile(directory.resolve("project-closed"));
             } catch (IOException error) {
-                MOD.log("Could not signal Melodyne that the project closed", error);
+                MOD.log("Could not signal Melodyne to close", error);
                 editor.destroy();
             }
         }
@@ -442,12 +460,12 @@ public final class BwAraActions implements ActionProvider {
             Files.createFile(directory.resolve("save-" + token + ".request"));
             Path response = directory.resolve("save-" + token + ".ready");
             long start = System.nanoTime();
-            while (!projectClosed && editor.isAlive() && Files.notExists(response)) {
+            while (end == null && editor.isAlive() && Files.notExists(response)) {
                 if (System.nanoTime() - start >= TimeUnit.SECONDS.toNanos(60))
                     throw new IOException("Melodyne did not finish preparing the save. Try saving again.");
                 Thread.sleep(20);
             }
-            if (projectClosed)
+            if (end != null)
                 return 0;
             if (Files.isRegularFile(response))
                 return readRevision(response);
@@ -477,7 +495,7 @@ public final class BwAraActions implements ActionProvider {
                 return;
 
             Path media = onUi(() -> {
-                if (projectClosed || selection.project().IDq())
+                if (!hasTarget() || selection.project().IDq())
                     return null;
                 selection.checkCurrent(current);
                 return selection.mediaDirectory();
@@ -488,7 +506,7 @@ public final class BwAraActions implements ActionProvider {
                 // 只给选中的事件换一份私有 WAV。共用原素材的邻居不应一起“被整容”。
                 var proxy = writeProjectMedia(media, newest, ThreadLocalRandom.current().nextInt(1024, 65536));
                 if (!onUi(() -> {
-                    if (projectClosed || selection.project().IDq())
+                    if (!hasTarget() || selection.project().IDq())
                         return false;
                     attach(proxy);
                     return true;
@@ -497,6 +515,8 @@ public final class BwAraActions implements ActionProvider {
                 proxyFrames = proxy.frames();
                 proxyRevision = newest;
             }
+            if (end != null)
+                return;
             Path next = directory.resolve("engine-preview.next");
             Files.writeString(next, newest + " " + proxyFrames + " " + proxyRevision + "\n",
                 StandardCharsets.US_ASCII);
@@ -512,7 +532,7 @@ public final class BwAraActions implements ActionProvider {
         }
 
         private void consumePreview(long version) throws IOException {
-            if (version <= consumedRevision || projectClosed)
+            if (version <= consumedRevision || end != null)
                 return;
             // 保留引擎命令引用的两份文件，方便它在重启后重新接入。
             // 保存与发布共用此工作线程，不会在复制过程中删掉同一份快照。
@@ -538,13 +558,13 @@ public final class BwAraActions implements ActionProvider {
 
         private void receiveTransport() {
             try (var input = new BufferedReader(new InputStreamReader(editor.getInputStream(), StandardCharsets.US_ASCII))) {
-                for (String line; !projectClosed && (line = input.readLine()) != null;) {
+                for (String line; end == null && (line = input.readLine()) != null;) {
                     String[] fields = line.split(" ", 2);
                     if (fields.length != 2 || !List.of("start", "stop", "seek", "toggle").contains(fields[0]))
                         continue;
                     double seconds = Double.parseDouble(fields[1]);
                     onUi(() -> {
-                        if (active == this && !projectClosed) {
+                        if (active == this && hasTarget()) {
                             try {
                                 selection.checkCurrent(current);
                                 selection.transportCommand(fields[0], seconds);
@@ -564,18 +584,18 @@ public final class BwAraActions implements ActionProvider {
         }
 
         private void checkpoint(long version, Runnable after) throws Exception {
-            Path media = onUi(() -> !projectClosed && version > storedRevision
+            Path media = onUi(() -> hasTarget() && version > storedRevision
                 ? selection.mediaDirectory() : null).get();
             var saved = media == null ? null : writeProjectMedia(media, version, 0);
             long start = System.nanoTime();
             // 换入完整音频，再启动 Bitwig 自己的保存，必须同一个 UI 回合完成。
             // 后台在这里等着，免得下一次预览抢先把引用换走。
             while (!onUi(() -> {
-                if (projectClosed)
+                if (end == End.PROJECT_CLOSED)
                     return true;
                 if (selection.project().IDq())
                     return false;
-                if (saved != null) {
+                if (hasTarget() && saved != null) {
                     attach(saved);
                     storedRevision = version;
                 }
@@ -586,7 +606,7 @@ public final class BwAraActions implements ActionProvider {
                     throw new IOException("Bitwig is still saving this project. Try saving again.");
                 Thread.sleep(30);
             }
-            if (saved != null && !projectClosed) {
+            if (saved != null && end == null) {
                 // 已保存的 WAV 就此封存。继续改音时另建代理，磁盘上的存档不追着编辑跑。
                 proxyRevision = 0;
                 revision = version;
@@ -615,7 +635,7 @@ public final class BwAraActions implements ActionProvider {
         }
 
         private TransportSnapshot transport() {
-            if (projectClosed)
+            if (!hasTarget())
                 return new TransportSnapshot(0, 0, null);
             var sample = selection.transport(current);
             return new TransportSnapshot(sample.mode(), sample.seconds(), DockPanel.bounds(selection.project()));
@@ -675,7 +695,7 @@ public final class BwAraActions implements ActionProvider {
 
     private record Selection(CmH project, DyF event, poA region, fRJ asset, Path source) {
         TransportSnapshot transport(fRJ current) {
-            if (!isCurrent(current))
+            if (region.GKF() != current)
                 return new TransportSnapshot(0, 0, null);
             var transport = project.jPe();
             double beat = transport.bcT().getDoubleValue();
@@ -727,9 +747,9 @@ public final class BwAraActions implements ActionProvider {
             return project.PJ3().Gef().toPath();
         }
 
-        private boolean isCurrent(fRJ current) {
-            // 移动和裁剪会改坐标，修音仍然跟着同一个事件。换了事件或素材才要拦住。
-            if (event.unz(CmH.class) != project || region.GKF() != current)
+        private boolean containsEvent() {
+            // 移动和裁剪会改坐标，事件只要还在原片段里，会话就继续。
+            if (event.unz(CmH.class) != project)
                 return false;
             try (Stream<?> regions = event.vws()) {
                 return regions.anyMatch(candidate -> candidate == region);
@@ -737,7 +757,7 @@ public final class BwAraActions implements ActionProvider {
         }
 
         void checkCurrent(fRJ current) throws IOException {
-            if (!isCurrent(current))
+            if (!containsEvent() || region.GKF() != current)
                 throw new IOException("The original audio event or its source changed while Melodyne was open.");
         }
 
