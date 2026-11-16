@@ -34,7 +34,6 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -342,7 +341,7 @@ public final class BwAraActions implements ActionProvider {
     }
 
     private record ProjectMedia(Path path, long frames) {}
-    private record Restore(long version) {}
+    private record Restore(Path source) {}
 
     static void restoreEdit(dgR history) {
         var session = active;
@@ -360,8 +359,7 @@ public final class BwAraActions implements ActionProvider {
         private final Path original;
         private final Process editor;
         private final LinkedBlockingQueue<CheckpointRequest> checkpoints = new LinkedBlockingQueue<>();
-        // 撤销可能重建素材对象，用这个会话挂过的路径找成对的 ARA 存档。
-        private final HashMap<Path, Long> history = new HashMap<>();
+        private final Path initialSource;
         private fRJ current;
         private long closeCheckToken;
         private long storedRevision;
@@ -381,7 +379,7 @@ public final class BwAraActions implements ActionProvider {
             this.original = original;
             this.editor = editor;
             current = selection.asset();
-            history.put(assetPath(current), 0L);
+            initialSource = assetPath(current);
         }
 
         private void run() throws Exception {
@@ -487,22 +485,40 @@ public final class BwAraActions implements ActionProvider {
             }
             if (restored == current)
                 return;
-            var version = history.get(assetPath(restored));
+            Path source = assetPath(restored);
             var owners = clipReferences(selection.region());
-            if (version == null || owners.size() != 1 || owners.getFirst() != selection.event())
+            if (source == null || !source.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".wav") ||
+                    owners.size() != 1 || owners.getFirst() != selection.event()) {
+                stop(End.TARGET_CHANGED);
                 return;
+            }
             current = restored;
             WaveformPreview.clear(selection.region());
-            restoring = new Restore(version);
+            restoring = new Restore(source);
         }
 
         private void restoreArchive(Restore restore) throws Exception {
-            String stem = "restore-" + ++restoreToken;
+            String stem = "restore-" + (restoreToken + 1);
             Path request = directory.resolve(stem + ".request");
             Path ready = directory.resolve(stem + ".ready");
             Path temporary = request.resolveSibling(stem + ".partial");
-            Files.writeString(temporary, Long.toString(restore.version()), StandardCharsets.US_ASCII);
-            moveIntoPlace(temporary, request);
+            try {
+                if (!prepareRestore(restore.source(), temporary)) {
+                    onUi(() -> {
+                        if (restoring == restore)
+                            stop(End.TARGET_CHANGED);
+                        return null;
+                    }).get();
+                    return;
+                }
+                // 磁盘还在找存档时，用户可能已按了下一次撤销。只把还用得上的请求交给 Melodyne。
+                if (restoring != restore || end != null)
+                    return;
+                moveIntoPlace(temporary, request);
+                ++restoreToken;
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
             while (end == null && editor.isAlive() && Files.notExists(ready)) {
                 if (System.nanoTime() >= deadline)
@@ -525,6 +541,24 @@ public final class BwAraActions implements ActionProvider {
             consumePreview(cutoff);
             Files.delete(request);
             Files.delete(ready);
+        }
+
+        private boolean prepareRestore(Path source, Path request) throws IOException {
+            if (source.equals(initialSource)) {
+                Path previous = directory.resolve("previous.ara");
+                if (Files.isRegularFile(previous))
+                    Files.copy(previous, request);
+                else
+                    Files.createFile(request);
+                return true;
+            }
+            if (TakeAudio.restoreArchive(source, original, request))
+                return true;
+            if (Files.mismatch(source, original) != -1)
+                return false;
+            // 空请求还原原音。真实存档都非空，编辑器也能据此识别随后的自动分析。
+            Files.createFile(request);
+            return true;
         }
 
         private boolean hasWritableTarget() {
@@ -751,8 +785,6 @@ public final class BwAraActions implements ActionProvider {
                 Files.copy(snapshot(version, ".wav"), temporary, StandardCopyOption.REPLACE_EXISTING);
                 long frames = TakeAudio.padPreview(temporary, padding);
                 TakeAudio.embed(temporary, original, snapshot(version, ".ara"));
-                Files.copy(snapshot(version, ".ara"), directory.resolve("history-" + version + ".ara"),
-                    StandardCopyOption.REPLACE_EXISTING);
                 Files.move(temporary, published);
                 return new ProjectMedia(published, frames);
             } finally {
@@ -765,7 +797,6 @@ public final class BwAraActions implements ActionProvider {
                 throw new IOException("The project media folder moved. Try saving again.");
             // 我们自己发布的素材接着认，外面换进来的素材才结束旧会话。
             current = selection.apply(media.path(), media.frames());
-            history.put(assetPath(current), version);
             storedRevision = version;
             WaveformPreview.clear(selection.region());
         }

@@ -349,10 +349,12 @@ struct AraSession::State {
     unsigned long long completedCloseCheck = 0;
     unsigned long long completedRestore = 0;
 
-    bool audition = false;
+    const bool audition;
+    const bool restoredOnOpen;
 
-    State(const fs::path& plugin, const fs::path& input, const fs::path& priorArchive, bool audition)
-        : entry(plugin), audio(std::make_unique<WaveSource>(input)), audition(audition)
+    State(const fs::path& plugin, const fs::path& input, const fs::path& priorArchive, const fs::path& liveDirectory)
+        : entry(plugin), audio(std::make_unique<WaveSource>(input)), previewDirectory(liveDirectory),
+          audition(!liveDirectory.empty()), restoredOnOpen(!priorArchive.empty())
     {
         std::clog << "Creating ARA document\n";
         entry.initialize();
@@ -372,8 +374,12 @@ struct AraSession::State {
         doc->endEditing();
         region = doc->getRef(playback);
 
-        if (!priorArchive.empty())
+        if (restoredOnOpen) {
+            // 从已有改音开窗时，先留一份原音状态，Bitwig 才能一路撤回第一笔之前。
+            if (audition)
+                saveArchive(previewDirectory / "original.ara");
             restoreArchive(priorArchive);
+        }
         doc->enableAudioSourceSamplesAccess(source, true);
 
         std::clog << "Initializing VST3 component\n";
@@ -384,6 +390,8 @@ struct AraSession::State {
         if (audition)
             instance->getEditorRenderer().addPlaybackRegion(region);
         instance->getPlaybackRenderer().addPlaybackRegion(region);
+        if (audition && !restoredOnOpen)
+            saveArchive(previewDirectory / "original.ara");
     }
 
     ~State()
@@ -479,8 +487,9 @@ struct AraSession::State {
     }
 };
 
-AraSession::AraSession(const fs::path& plugin, const fs::path& input, const fs::path& priorArchive, bool audition)
-    : state(std::make_unique<State>(plugin, input, priorArchive, audition)) {}
+AraSession::AraSession(const fs::path& plugin, const fs::path& input, const fs::path& priorArchive,
+                       const fs::path& liveDirectory)
+    : state(std::make_unique<State>(plugin, input, priorArchive, liveDirectory)) {}
 AraSession::~AraSession() = default;
 
 IPlugView* AraSession::createEditor()
@@ -501,8 +510,8 @@ void AraSession::poll()
 {
     auto& current = *state;
     current.doc->pollModelUpdates();
-    if (!current.previewDirectory.empty() && !current.doc->playbackRevision && current.doc->sourceChanged)
-        current.saveArchive(current.previewDirectory / "history-0.ara");
+    if (current.audition && !current.restoredOnOpen && !current.doc->playbackRevision && current.doc->sourceChanged)
+        current.saveArchive(current.previewDirectory / "original.ara");
 }
 
 void AraSession::startTransport()
@@ -606,12 +615,6 @@ void AraSession::render(const fs::path& output, const fs::path& archive)
     state->saveArchive(archive);
 }
 
-void AraSession::beginLiveRendering(const fs::path& directory)
-{
-    state->previewDirectory = directory;
-    state->saveArchive(directory / "history-0.ara");
-}
-
 bool AraSession::canRequestProjectSave() const
 {
     return !state->previewDirectory.empty();
@@ -645,16 +648,17 @@ void AraSession::updateLiveRendering(bool editingWithMouse)
         current.completePreview();
 
     const auto restore = L"restore-" + std::to_wstring(current.completedRestore + 1);
-    if (fs::exists(current.previewDirectory / (restore + L".request"))) {
+    const auto restoreRequest = current.previewDirectory / (restore + L".request");
+    if (fs::exists(restoreRequest)) {
         if (current.previewJob.valid())
             return;
-        unsigned long long version = 0;
-        require(static_cast<bool>(std::ifstream(current.previewDirectory / (restore + L".request")) >> version),
-                "Could not read Melodyne history request.");
-        current.restoreArchive(current.previewDirectory / (L"history-" + std::to_wstring(version) + L".ara"));
+        const bool restoringOriginal = fs::file_size(restoreRequest) == 0;
+        current.restoreArchive(restoringOriginal ? current.previewDirectory / "original.ara" : restoreRequest);
         selectRegion();
         // 这是 Bitwig 恢复旧版本，不是一笔新改音。收掉这次恢复带来的通知。
         current.doc->pollModelUpdates();
+        // 还原原音后可能再跑一次分析。这次迟到的通知和刚开窗时一样，也别进撤销栈。
+        current.doc->initialAnalysis = restoringOriginal;
         current.observedRevision = current.doc->playbackRevision;
         current.renderingRevision = current.observedRevision;
         current.replyWithRevision(restore);

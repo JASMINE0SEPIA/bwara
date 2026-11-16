@@ -8,13 +8,15 @@ While **Export Audio** is rendering, you can keep editing in Melodyne. BwARA app
 
 **Ctrl+S** in either window saves the edit. Bitwig's project-close prompt handles unsaved changes and closes Melodyne when the project closes. Keep the project media when moving the project. Reopen the editor from the same event to continue editing.
 
-An applied Melodyne edit appears in Bitwig's **Edit** menu as **Apply Melodyne Edit**. Undo or redo it there to restore the audio, waveform, and notes in the open Melodyne window. Keyboard shortcuts go to the focused window.
+An applied Melodyne edit appears in Bitwig's **Edit** menu as **Apply Melodyne Edit**. Undo or redo it there to restore the audio, waveform, and notes in the open Melodyne window, even after reopening Melodyne. You can undo all the way back to the original source. Keyboard shortcuts go to the focused window.
 
 Undoing a deletion restores the event with its latest applied Melodyne edit. Reopen Melodyne on that event to continue editing. Redoing the deletion closes its Melodyne window.
 
-You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. You can also undo and redo a move along the same track in Bitwig while keeping the Melodyne edit active. Deleting the bound event or its clip, or replacing the source, closes Melodyne. If the event becomes shared while editing, BwARA closes Melodyne before publishing or saving another edit. Close Melodyne before splitting, copying, or undoing other changes to the event.
+You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. You can also undo and redo a move along the same track in Bitwig while keeping the Melodyne edit active. Deleting the bound event or its clip, or replacing the source, closes Melodyne. If the event becomes shared while editing, BwARA closes Melodyne before publishing or saving another edit.
 
-If an independent copy inherits a live preview WAV, the next edit on the original gets a new WAV. The copy plays the audio stored in its inherited WAV. Save before copying to carry over the latest edit.
+Splitting an independent Arranger clip or an audio event in the detail editor carries the latest applied edit into both parts. The open editor stays with the left part. Close it to open and edit the right part independently. Undoing the split closes the right part's editor when that part disappears.
+
+Ordinary copy and paste carries the latest applied audio and Melodyne state into an independent copy. You can keep editing the original while the copy keeps its version. Save first if a recent edit is still rendering.
 
 Melodyne follows Bitwig's transport. Use Space to start or stop Bitwig, or double-click the Melodyne ruler to play from that position. With Bitwig stopped, double-click the note editor background to audition through the Windows default output.
 

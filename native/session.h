@@ -12,7 +12,7 @@ class IPlugView;
 class AraSession {
 public:
     AraSession(const std::filesystem::path& plugin, const std::filesystem::path& input,
-               const std::filesystem::path& priorArchive, bool audition);
+               const std::filesystem::path& priorArchive, const std::filesystem::path& liveDirectory);
     ~AraSession();
 
     Steinberg::IPlugView* createEditor();
@@ -22,7 +22,6 @@ public:
     void updateTransport(int mode, double sourceSeconds);
     void stopTransport();
     void render(const std::filesystem::path& output, const std::filesystem::path& archive);
-    void beginLiveRendering(const std::filesystem::path& directory);
     bool canRequestProjectSave() const;
     bool projectClosed() const;
     void requestProjectSave();

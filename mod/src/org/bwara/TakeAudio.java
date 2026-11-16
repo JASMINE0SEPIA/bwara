@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 
 /** WAV 正常播放，原始音频和 ARA 存档藏在私有块里；搬工程时不用找散落一地的配件。 */
 final class TakeAudio {
@@ -66,33 +67,51 @@ final class TakeAudio {
 
     static boolean extract(Path rendered, Path source, Path archive) throws IOException {
         try (var wave = new RandomAccessFile(rendered.toFile(), "r")) {
-            long end = riffEnd(wave);
-            Chunk original = null;
-            Chunk state = null;
-            while (wave.getFilePointer() < end) {
-                if (end - wave.getFilePointer() < 8)
-                    throw new IOException("Truncated WAV chunk header.");
-                int id = wave.readInt();
-                long size = readSize(wave);
-                long start = wave.getFilePointer();
-                if (start + padded(size) > end)
-                    throw new IOException("Truncated WAV chunk.");
-                if (id == SOURCE && original == null)
-                    original = new Chunk(start, size);
-                else if (id == ARCHIVE && state == null)
-                    state = new Chunk(start, size);
-                else if (id == SOURCE || id == ARCHIVE)
-                    throw new IOException("Duplicate BwARA state in WAV.");
-                wave.seek(start + padded(size));
-            }
-            if (original == null && state == null)
+            var state = readState(wave);
+            if (state == null)
                 return false;
-            if (original == null || state == null || original.size == 0 || state.size == 0)
-                throw new IOException("This WAV contains incomplete BwARA state.");
-            original.write(wave, source);
-            state.write(wave, archive);
+            state.original().write(wave, source);
+            state.archive().write(wave, archive);
             return true;
         }
+    }
+
+    static boolean restoreArchive(Path rendered, Path source, Path archive) throws IOException {
+        try (var wave = new RandomAccessFile(rendered.toFile(), "r")) {
+            var state = readState(wave);
+            // 同名或同长度的 WAV 也可能是另一遍录音。逐块比对源文件，免得拿错音来套旧存档。
+            if (state == null || !state.original().matches(wave, source))
+                return false;
+            state.archive().write(wave, archive);
+            return true;
+        }
+    }
+
+    private static State readState(RandomAccessFile wave) throws IOException {
+        long end = riffEnd(wave);
+        Chunk original = null;
+        Chunk archive = null;
+        while (wave.getFilePointer() < end) {
+            if (end - wave.getFilePointer() < 8)
+                throw new IOException("Truncated WAV chunk header.");
+            int id = wave.readInt();
+            long size = readSize(wave);
+            long start = wave.getFilePointer();
+            if (start + padded(size) > end)
+                throw new IOException("Truncated WAV chunk.");
+            if (id == SOURCE && original == null)
+                original = new Chunk(start, size);
+            else if (id == ARCHIVE && archive == null)
+                archive = new Chunk(start, size);
+            else if (id == SOURCE || id == ARCHIVE)
+                throw new IOException("Duplicate BwARA state in WAV.");
+            wave.seek(start + padded(size));
+        }
+        if (original == null && archive == null)
+            return null;
+        if (original == null || archive == null || original.size == 0 || archive.size == 0)
+            throw new IOException("This WAV contains incomplete BwARA state.");
+        return new State(original, archive);
     }
 
     private static long riffEnd(RandomAccessFile wave) throws IOException {
@@ -126,7 +145,28 @@ final class TakeAudio {
             wave.write(0);
     }
 
+    private record State(Chunk original, Chunk archive) {}
+
     private record Chunk(long start, long size) {
+        boolean matches(RandomAccessFile wave, Path path) throws IOException {
+            if (Files.size(path) != size)
+                return false;
+            wave.seek(start);
+            try (var input = Files.newInputStream(path)) {
+                byte[] expected = new byte[64 * 1024];
+                byte[] actual = new byte[expected.length];
+                for (long remaining = size; remaining > 0;) {
+                    int count = (int) Math.min(remaining, expected.length);
+                    wave.readFully(expected, 0, count);
+                    if (input.readNBytes(actual, 0, count) != count ||
+                            !Arrays.equals(expected, 0, count, actual, 0, count))
+                        return false;
+                    remaining -= count;
+                }
+                return input.read() == -1;
+            }
+        }
+
         void write(RandomAccessFile wave, Path path) throws IOException {
             wave.seek(start);
             try (var output = Files.newOutputStream(path)) {

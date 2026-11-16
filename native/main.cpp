@@ -26,9 +26,9 @@ int wmain(int argc, wchar_t** argv)
     int status = 0;
     try {
         const auto* archive = argc >= 7 && std::wstring_view(argv[6]) != L"-" ? argv[6] : L"";
-        AraSession session(argv[2], argv[3], archive, mode == L"live");
-        if (mode == L"live")
-            session.beginLiveRendering(std::filesystem::absolute(argv[4]).parent_path());
+        const auto liveDirectory = mode == L"live"
+            ? std::filesystem::absolute(argv[4]).parent_path() : std::filesystem::path{};
+        AraSession session(argv[2], argv[3], archive, liveDirectory);
         if (editor)
             editInWindow(session, followTransport, argc >= 9 ? argv[8] : L"",
                          argc >= 10 ? std::stoul(argv[9]) : 0);
