@@ -5,6 +5,7 @@ import bitwig.obf.bju; // 时间线选区
 import bitwig.obf.drf; // Bitwig 的 UI 事件循环
 import bitwig.obf.eOj; // 编曲区片段容器
 import bitwig.obf.er; // 把工程位置映射到片段内部，包含偏移和循环
+import bitwig.obf.lKW; // Bitwig 的 Export Audio 渲染任务
 import bitwig.obf.poA; // 片段内的音频事件
 import bml.actions.ActionContext;
 import bml.actions.ActionProvider;
@@ -342,6 +343,7 @@ public final class BwAraActions implements ActionProvider {
     private record PreviewTarget(Path media, boolean needsProxy) {}
 
     private enum End { TARGET_CHANGED, PROJECT_CLOSED }
+    private enum CheckpointStatus { COMPLETE, EXPORTING, SAVING }
 
     private static final class LiveSelection {
         // 一次会话只认一个工程、一个事件。工程对象只在 UI 线程碰，文件工作交给后台。
@@ -531,7 +533,7 @@ public final class BwAraActions implements ActionProvider {
                 return;
 
             PreviewTarget target = onUi(() -> {
-                if (!hasWritableTarget() || selection.project().IDq())
+                if (audioExportRunning() || !hasWritableTarget() || selection.project().IDq())
                     return null;
                 return new PreviewTarget(selection.mediaDirectory(), proxyRevision == 0 || proxyIsShared());
             }).get();
@@ -546,7 +548,7 @@ public final class BwAraActions implements ActionProvider {
             Path command = directory.resolve("engine-preview.txt");
             // 音频写盘期间可能出现新的引用。核对、挂素材和通知引擎放在同一个 UI 回合。
             if (!onUi(() -> {
-                if (!hasWritableTarget() || selection.project().IDq())
+                if (audioExportRunning() || !hasWritableTarget() || selection.project().IDq())
                     return false;
                 // 刚才准备命令时若又多了一个引用，下轮先做新代理再发这版音频。
                 if (proxy == null && proxyIsShared())
@@ -626,22 +628,29 @@ public final class BwAraActions implements ActionProvider {
             Path media = onUi(() -> version > storedRevision && hasWritableTarget()
                 ? selection.mediaDirectory() : null).get();
             var saved = media == null ? null : writeProjectMedia(media, version, 0);
-            long start = System.nanoTime();
+            long saveTimeout = TimeUnit.SECONDS.toNanos(60);
+            long saveDeadline = System.nanoTime() + saveTimeout;
             // 换入完整音频，再启动 Bitwig 的保存或导出，必须同一个 UI 回合完成。
             // 后台在这里等着，免得下一次预览抢先把引用换走。
-            while (!onUi(() -> {
+            CheckpointStatus status;
+            while ((status = onUi(() -> {
                 if (end == End.PROJECT_CLOSED)
-                    return true;
+                    return CheckpointStatus.COMPLETE;
+                if (audioExportRunning())
+                    return CheckpointStatus.EXPORTING;
                 if (selection.project().IDq())
-                    return false;
+                    return CheckpointStatus.SAVING;
                 if (saved != null && hasWritableTarget()) {
                     attach(saved);
                     storedRevision = version;
                 }
                 after.run();
-                return true;
-            }).get()) {
-                if (System.nanoTime() - start >= TimeUnit.SECONDS.toNanos(60))
+                return CheckpointStatus.COMPLETE;
+            }).get()) != CheckpointStatus.COMPLETE) {
+                // 正常导出可以超过一分钟。等它结束，再给工程保存自己的等待时间。
+                if (status == CheckpointStatus.EXPORTING)
+                    saveDeadline = System.nanoTime() + saveTimeout;
+                else if (System.nanoTime() - saveDeadline >= 0)
                     throw new IOException("Bitwig is still saving this project. Try again.");
                 Thread.sleep(30);
             }
@@ -650,6 +659,11 @@ public final class BwAraActions implements ActionProvider {
                 proxyRevision = 0;
                 revision = version;
             }
+        }
+
+        private boolean audioExportRunning() {
+            // Bitwig 开始渲染时登记任务，完成、失败或取消后清除。此时别换掉导出正在读的素材。
+            return selection.project().QfO() instanceof lKW;
         }
 
         private ProjectMedia writeProjectMedia(Path media, long version, int padding) throws IOException {

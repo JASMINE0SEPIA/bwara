@@ -4,6 +4,8 @@ Requires Bitwig Studio 6.1.7.24824 for Windows x64 AVX2, Patchbay 0.36.0-dev.14 
 
 With the audio engine active, right-click an Arranger audio event backed by a local mono or stereo WAV and choose **Edit with Melodyne…**. For a clip with several events, select the event in the detail editor. If several clips share the same event, open an independent clip in Melodyne. Separate events can use the same source WAV. Changes play automatically. If there are pending Melodyne edits, **Export Audio** waits for a rendered WAV and attaches it to the event before starting.
 
+While **Export Audio** is rendering, you can keep editing in Melodyne. BwARA applies further edits in Bitwig and handles queued saves once the export finishes or is canceled.
+
 **Ctrl+S** in either window saves the edit. Bitwig's project-close prompt handles unsaved changes and closes Melodyne when the project closes. Keep the project media when moving the project. Reopen the editor from the same event to continue editing.
 
 You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. Deleting the bound event or its clip, or replacing the source, closes Melodyne. If the event becomes shared while editing, BwARA closes Melodyne before publishing or saving another edit. Save before deleting or replacing audio to keep the latest edits available if you undo the operation. Close Melodyne before splitting, copying, or undoing changes to the event.
