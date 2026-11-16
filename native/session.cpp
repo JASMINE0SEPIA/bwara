@@ -342,7 +342,6 @@ struct AraSession::State {
     std::unique_ptr<PlugInInstance> previewRenderer;
     std::future<void> previewJob;
     fs::path previewDirectory;
-    Clock::time_point lastChange{};
     unsigned long long observedRevision = 0;
     unsigned long long renderingRevision = 0;
     unsigned long long publishedRevision = 0;
@@ -621,17 +620,13 @@ void AraSession::requestProjectSave()
     std::clog << "Forwarded Ctrl+S to Bitwig\n";
 }
 
-void AraSession::updateLiveRendering()
+void AraSession::updateLiveRendering(bool editingWithMouse)
 {
     using namespace std::chrono_literals;
     auto& current = *state;
     if (current.previewDirectory.empty())
         return;
-    const auto now = State::Clock::now();
-    if (current.observedRevision != current.doc->playbackRevision) {
-        current.observedRevision = current.doc->playbackRevision;
-        current.lastChange = now;
-    }
+    current.observedRevision = current.doc->playbackRevision;
     const auto closeCheck = L"close-check-" + std::to_wstring(current.completedCloseCheck + 1);
     if (fs::exists(current.previewDirectory / (closeCheck + L".request"))) {
         current.replyWithRevision(closeCheck);
@@ -645,9 +640,9 @@ void AraSession::updateLiveRendering()
     const bool saving = fs::exists(current.previewDirectory / (stem + L".request"));
     unsigned long long consumed = 0;
     std::ifstream(current.previewDirectory / "preview-consumed") >> consumed;
-    // 平时只允许一份尚未消费的预览。保存可以越过这道门，确保交付当前版本。
+    // 拖动中先收变更，松手就处理最新一版。一次只挂出一份预览，保存请求可以直接排进来。
     if (!current.previewJob.valid() && current.observedRevision != current.renderingRevision &&
-        (saving || (consumed >= current.publishedRevision && now - current.lastChange >= 250ms)))
+        (saving || (!editingWithMouse && consumed >= current.publishedRevision)))
         current.startPreview();
 
     if (saving && !current.previewJob.valid()) {

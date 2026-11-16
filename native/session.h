@@ -26,7 +26,7 @@ public:
     bool canRequestProjectSave() const;
     bool projectClosed() const;
     void requestProjectSave();
-    void updateLiveRendering();
+    void updateLiveRendering(bool editingWithMouse);
     void finishLiveRendering();
 
 private:

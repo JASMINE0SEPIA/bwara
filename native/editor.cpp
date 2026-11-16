@@ -382,7 +382,9 @@ struct Window {
                 owner->pollTransport();
                 owner->place();
                 owner->session.poll();
-                owner->session.updateLiveRendering();
+                const int primaryButton = GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON;
+                const bool editingWithMouse = GetForegroundWindow() == hwnd && GetAsyncKeyState(primaryButton) < 0;
+                owner->session.updateLiveRendering(editingWithMouse);
             } catch (...) {
                 owner->failure = std::current_exception();
                 PostMessageW(hwnd, WM_CLOSE, 0, 0);

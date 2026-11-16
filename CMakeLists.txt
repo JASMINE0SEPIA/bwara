@@ -65,6 +65,10 @@ file(READ "${ara_updates}" ara_update_code)
 ara_replace(ara_update_code "    const auto audioSource = fromHostRef (audioSourceHostRef);\n    ARA_VALIDATE_API_ARGUMENT (audioSource, ARA::contains (getDocument ()->getAudioSources (), audioSource));\n    ARA_VALIDATE_API_ARGUMENT (range"
                "    _araDocumentController->sourceChanged = true;\n    const auto audioSource = fromHostRef (audioSourceHostRef);\n    ARA_VALIDATE_API_ARGUMENT (audioSource, ARA::contains (getDocument ()->getAudioSources (), audioSource));\n    ARA_VALIDATE_API_ARGUMENT (range"
 )
+# 一个会话只有一份修改数据和一个播放区域。报告其中任意一处声音变了，都得更新预览。
+ara_replace(ara_update_code "    const auto audioModification = fromHostRef (audioModificationHostRef);"
+               "    _araDocumentController->playbackChanged |= scopeFlags.affectSamples();\n    const auto audioModification = fromHostRef (audioModificationHostRef);"
+)
 ara_replace(ara_update_code "    const auto playbackRegion = fromHostRef (playbackRegionHostRef);"
                "    _araDocumentController->playbackChanged |= scopeFlags.affectSamples();\n    const auto playbackRegion = fromHostRef (playbackRegionHostRef);"
 )
