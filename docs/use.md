@@ -10,6 +10,8 @@ While **Export Audio** is rendering, you can keep editing in Melodyne. BwARA app
 
 An applied Melodyne edit appears in Bitwig's **Edit** menu as **Apply Melodyne Edit**. Undo or redo it there to restore the audio, waveform, and notes in the open Melodyne window. Keyboard shortcuts go to the focused window.
 
+Undoing a deletion restores the event with its latest applied Melodyne edit. Reopen Melodyne on that event to continue editing. Redoing the deletion closes its Melodyne window.
+
 You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. You can also undo and redo a move along the same track in Bitwig while keeping the Melodyne edit active. Deleting the bound event or its clip, or replacing the source, closes Melodyne. If the event becomes shared while editing, BwARA closes Melodyne before publishing or saving another edit. Close Melodyne before splitting, copying, or undoing other changes to the event.
 
 If an independent copy inherits a live preview WAV, the next edit on the original gets a new WAV. The copy plays the audio stored in its inherited WAV. Save before copying to carry over the latest edit.

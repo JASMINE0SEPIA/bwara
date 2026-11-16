@@ -477,8 +477,15 @@ public final class BwAraActions implements ActionProvider {
         }
 
         private void restoreEdit() {
+            if (end != null)
+                return;
             var restored = selection.region().GKF();
-            if (end != null || restored == current || !selection.matches(restored))
+            // 重做删除时事件已经没了。现在就结束会话，别等下次同步播放头才发现。
+            if (!selection.matches(restored)) {
+                stop(End.TARGET_CHANGED);
+                return;
+            }
+            if (restored == current)
                 return;
             var version = history.get(assetPath(restored));
             var owners = clipReferences(selection.region());
