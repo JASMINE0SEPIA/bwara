@@ -178,6 +178,8 @@ public final class BwAraActions implements ActionProvider {
             } else if (!TakeAudio.extract(selection.source(), stagedInput, priorArchive)) {
                 Files.copy(selection.source(), stagedInput);
             }
+            var grid = onUi(() -> selection.matches(selection.asset()) ? selection.musicTime() : null).get();
+            MusicTime.publish(take, grid);
             bridge = new ProcessBuilder(engine.toString(), Long.toString(ProcessHandle.current().pid()), take.toString())
                 .directory(engine.getParent().toFile()).redirectErrorStream(true)
                 .redirectOutput(take.resolve("engine.log").toFile()).start();
@@ -206,7 +208,7 @@ public final class BwAraActions implements ActionProvider {
             }
             live = session;
             Process process = session.editor;
-            Thread transport = Thread.ofVirtual().name("BwARA transport").start(() -> follow(session, process));
+            Thread transport = Thread.ofVirtual().name("BwARA transport").start(() -> follow(session, process, grid));
             Thread commands = Thread.ofVirtual().name("BwARA editor commands").start(session::receiveTransport);
             try {
                 session.run();
@@ -824,9 +826,10 @@ public final class BwAraActions implements ActionProvider {
         return request;
     }
 
-    private static void follow(LiveSelection selection, Process process) {
+    private static void follow(LiveSelection selection, Process process, MusicTime grid) {
         try (var output = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.US_ASCII)) {
             TransportSnapshot previous = null;
+            long nextGridCheck = System.nanoTime();
             while (process.isAlive()) {
                 var request = onUi(selection::transport);
                 try {
@@ -842,6 +845,21 @@ public final class BwAraActions implements ActionProvider {
                     }
                 } catch (TimeoutException error) {
                     request.cancel(false);
+                }
+                if (System.nanoTime() - nextGridCheck >= 0) {
+                    nextGridCheck = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(300);
+                    var musicTime = onUi(() -> selection.hasTarget() ? selection.selection.musicTime() : null);
+                    try {
+                        var next = musicTime.get(100, TimeUnit.MILLISECONDS);
+                        if (!java.util.Objects.equals(grid, next)) {
+                            MusicTime.publish(selection.directory, next);
+                            grid = next;
+                        }
+                    } catch (TimeoutException error) {
+                        musicTime.cancel(false);
+                    } catch (IOException | ExecutionException error) {
+                        MOD.log("Could not update Melodyne's musical grid", error);
+                    }
                 }
                 Thread.sleep(24);
             }
@@ -861,6 +879,24 @@ public final class BwAraActions implements ActionProvider {
     }
 
     private record Selection(CmH project, DyF event, poA region, fRJ asset, Path source) {
+        MusicTime musicTime() {
+            double local = region.ie();
+            double anchor = er.beI(local, event, 0);
+            var loop = event.qaW();
+            if (loop.beI() && loop.ckt() > 0 && region.oiY() > loop.ie()) {
+                double head = project.jPe().bcT().getDoubleValue();
+                double at = er.beI(head, event);
+                if (head >= event.ie() && head < event.oiY() && at >= local && at < region.oiY()) {
+                    // 播放头在事件里时，用正在看的这一圈。用整数圈数，免得小数抖动不断刷新标尺。
+                    anchor += Math.rint((head - er.beI(at, event, 0)) / loop.ckt()) * loop.ckt();
+                } else {
+                    double repeating = Math.max(local, loop.ie());
+                    anchor = projectBeat(repeating) - (repeating - local);
+                }
+            }
+            return MusicTime.capture(project, event, region, anchor, asset.Bqk());
+        }
+
         TransportSnapshot transport() {
             var transport = project.jPe();
             double beat = transport.bcT().getDoubleValue();
@@ -886,17 +922,7 @@ public final class BwAraActions implements ActionProvider {
                 var time = event.dH_();
                 double local = region.ie() + region.Gef(seconds, time.lZ_(), time.sCA(region.ie()));
                 local = Math.max(region.ie(), Math.min(Math.nextDown(region.oiY()), local));
-                double beat = er.beI(local, event, 0);
-                var loop = event.qaW();
-                if (loop.beI() && loop.ckt() > 0 && local >= loop.ie()) {
-                    // 同一源位置可能在工程里出现多次，取离当前播放头最近的一次。
-                    double period = loop.ckt();
-                    double first = Math.max(0, Math.ceil((event.ie() - beat) / period));
-                    double last = Math.floor((Math.nextDown(event.oiY()) - beat) / period);
-                    double nearest = Math.rint((transport.bcT().getDoubleValue() - beat) / period);
-                    if (first <= last)
-                        beat += period * Math.max(first, Math.min(last, nearest));
-                }
+                double beat = projectBeat(local);
                 if (Double.isFinite(beat)) {
                     beat = Math.max(event.ie(), Math.min(Math.nextDown(event.oiY()), beat));
                     // 最后一个参数让停着的引擎也移动播放头，下一次 Play 才会从这里起跑。
@@ -904,6 +930,21 @@ public final class BwAraActions implements ActionProvider {
                     MOD.log("Melodyne seek to source " + seconds + " s, project beat " + beat);
                 }
             }
+        }
+
+        private double projectBeat(double local) {
+            double beat = er.beI(local, event, 0);
+            var loop = event.qaW();
+            if (loop.beI() && loop.ckt() > 0 && local >= loop.ie()) {
+                // 同一源位置可能在工程里出现多次，取离当前播放头最近的一次。
+                double period = loop.ckt();
+                double first = Math.max(0, Math.ceil((event.ie() - beat) / period));
+                double last = Math.floor((Math.nextDown(event.oiY()) - beat) / period);
+                double nearest = Math.rint((project.jPe().bcT().getDoubleValue() - beat) / period);
+                if (first <= last)
+                    beat += period * Math.max(first, Math.min(last, nearest));
+            }
+            return beat;
         }
 
         Path mediaDirectory() throws IOException {

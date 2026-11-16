@@ -44,6 +44,67 @@ void bwaraTransport(const char* command, double seconds)
 }
 
 namespace {
+struct MusicTime {
+    std::vector<ARA::ARAContentTempoEntry> tempo{{0, 0}, {1, 1}};
+    std::vector<ARA::ARAContentBarSignature> meter{{4, 4, 0}};
+
+    static std::shared_ptr<const MusicTime> read(const fs::path& path)
+    {
+        auto result = std::make_shared<MusicTime>();
+        std::ifstream input(path);
+        if (!input)
+            return nullptr;
+        size_t tempoCount = 0;
+        size_t meterCount = 0;
+        if (!(input >> tempoCount >> meterCount) || tempoCount < 2 || tempoCount > 131072 ||
+            meterCount < 1 || meterCount > 65536)
+            return nullptr;
+        result->tempo.resize(tempoCount);
+        result->meter.resize(meterCount);
+        bool hasOrigin = false;
+        for (size_t i = 0; i < tempoCount; ++i) {
+            auto& point = result->tempo[i];
+            if (!(input >> point.timePosition >> point.quarterPosition) ||
+                !std::isfinite(point.timePosition) || !std::isfinite(point.quarterPosition) ||
+                (i > 0 && (point.timePosition <= result->tempo[i - 1].timePosition ||
+                           point.quarterPosition <= result->tempo[i - 1].quarterPosition)))
+                return nullptr;
+            hasOrigin |= point.quarterPosition == 0;
+        }
+        for (size_t i = 0; i < meterCount; ++i) {
+            auto& point = result->meter[i];
+            if (!(input >> point.numerator >> point.denominator >> point.position) ||
+                point.numerator <= 0 || point.denominator <= 0 || !std::isfinite(point.position) ||
+                (i == 0 ? point.position != 0 : point.position <= result->meter[i - 1].position))
+                return nullptr;
+        }
+        return hasOrigin ? result : nullptr;
+    }
+
+    void fill(ProcessContext& time) const
+    {
+        const double seconds = time.projectTimeSamples / time.sampleRate;
+        auto right = std::upper_bound(tempo.begin() + 1, tempo.end(), seconds, [](double value, const auto& point) {
+            return value < point.timePosition;
+        });
+        if (right == tempo.end())
+            --right;
+        const auto& left = *std::prev(right);
+        const double quartersPerSecond = (right->quarterPosition - left.quarterPosition) /
+                                         (right->timePosition - left.timePosition);
+        time.projectTimeMusic = left.quarterPosition + (seconds - left.timePosition) * quartersPerSecond;
+        time.tempo = 60 * quartersPerSecond;
+        const auto signature = std::prev(std::upper_bound(meter.begin() + 1, meter.end(), time.projectTimeMusic,
+            [](double value, const auto& point) { return value < point.position; }));
+        time.timeSigNumerator = signature->numerator;
+        time.timeSigDenominator = signature->denominator;
+        const double barLength = 4.0 * signature->numerator / signature->denominator;
+        time.barPositionMusic = signature->position +
+            std::floor((time.projectTimeMusic - signature->position) / barLength) * barLength;
+        time.state |= ProcessContext::kBarPositionValid;
+    }
+};
+
 void require(bool condition, const char* message)
 {
     if (!condition)
@@ -178,6 +239,11 @@ public:
         processSamples(frames, position, position, true, buffers);
     }
 
+    void setMusicTime(std::shared_ptr<const MusicTime> grid)
+    {
+        std::atomic_store(&musicTime, std::move(grid));
+    }
+
     void processSamples(int frames, int64_t position, int64_t continuous, bool playing, float** buffers)
     {
         for (int channel = 0; channel < channelCount; ++channel)
@@ -200,10 +266,7 @@ public:
         time.sampleRate = sampleRate;
         time.projectTimeSamples = position;
         time.continousTimeSamples = continuous;
-        time.projectTimeMusic = position / sampleRate;
-        time.tempo = 60;
-        time.timeSigNumerator = 4;
-        time.timeSigDenominator = 4;
+        std::atomic_load(&musicTime)->fill(time);
 
         ProcessData block;
         block.processMode = processMode;
@@ -237,6 +300,7 @@ private:
     IPtr<IEditController> controller;
     FUnknownPtr<IAudioProcessor> processor;
     std::array<std::vector<float>, 2> silence;
+    std::shared_ptr<const MusicTime> musicTime = std::make_shared<MusicTime>();
     int channelCount = 0;
     int32 processMode = kOffline;
     double sampleRate = 0;
@@ -333,6 +397,9 @@ struct AraSession::State {
     std::unique_ptr<WaveSource> audio;
     TestHost host;
     ARADocumentController* doc = nullptr;
+    MusicalContext* context = nullptr;
+    std::shared_ptr<const MusicTime> musicTime = std::make_shared<MusicTime>();
+    fs::file_time_type musicTimeStamp = fs::file_time_type::min();
     ARA::ARAPlaybackRegionRef region = nullptr;
     std::unique_ptr<PlugInInstance> instance;
     std::mutex positionMutex;
@@ -363,7 +430,9 @@ struct AraSession::State {
         require(doc != nullptr, "Could not create the ARA document.");
         doc->setMinimalContentUpdateLogging(true);
         doc->beginEditing();
-        auto* context = host.addMusicalContext(document, "Clip", {0.3f, 0.6f, 0.8f});
+        context = host.addMusicalContext(document, "Clip", {0.3f, 0.6f, 0.8f});
+        if (refreshMusicTime())
+            installMusicTime();
         auto* sequence = host.addRegionSequence(document, "Audio", context, {0.3f, 0.6f, 0.8f});
         auto* source = host.addAudioSource(document, audio.get(), "source");
         auto* modification = host.addAudioModification(document, source, "Clip", "modification");
@@ -384,6 +453,7 @@ struct AraSession::State {
 
         std::clog << "Initializing VST3 component\n";
         instance = entry.createPlugInInstance();
+        static_cast<Vst3Entry::Instance&>(*instance).setMusicTime(musicTime);
         std::clog << "Binding ARA roles\n";
         const auto renderRole = ARA::kARAPlaybackRendererRole | (audition ? ARA::kARAEditorRendererRole : 0);
         instance->bindToDocumentControllerWithRoles(doc->getDocumentController()->getRef(), renderRole | ARA::kARAEditorViewRole);
@@ -454,6 +524,7 @@ struct AraSession::State {
         // 编辑窗口负责跟随光标，另一个实例负责离线渲染，二者不抢同一套 process 状态。
         if (!previewRenderer) {
             previewRenderer = entry.createPlugInInstance();
+            static_cast<Vst3Entry::Instance&>(*previewRenderer).setMusicTime(musicTime);
             previewRenderer->bindToDocumentControllerWithRoles(doc->getDocumentController()->getRef(),
                                                                ARA::kARAPlaybackRendererRole);
             previewRenderer->getPlaybackRenderer().addPlaybackRegion(region);
@@ -465,6 +536,34 @@ struct AraSession::State {
         previewJob = std::async(std::launch::async, [this, wave = previewPath(L".wav")] {
             renderWave(*previewRenderer, *audio, wave);
         });
+    }
+
+    bool refreshMusicTime()
+    {
+        if (previewDirectory.empty())
+            return false;
+        const auto file = previewDirectory / "music-time.txt";
+        std::error_code error;
+        const auto stamp = fs::last_write_time(file, error);
+        if (stamp == musicTimeStamp)
+            return false;
+        auto next = error == std::errc::no_such_file_or_directory ? std::make_shared<MusicTime>() : MusicTime::read(file);
+        if (!next)
+            return false;
+        musicTime = std::move(next);
+        musicTimeStamp = stamp;
+        return true;
+    }
+
+    void installMusicTime()
+    {
+        context->setTempoEntries(musicTime->tempo);
+        context->setBarSignatures(musicTime->meter);
+        doc->updateMusicalContextContent(context, nullptr, ARA::ContentUpdateScopes::timelineIsAffected());
+        if (instance)
+            static_cast<Vst3Entry::Instance&>(*instance).setMusicTime(musicTime);
+        if (previewRenderer)
+            static_cast<Vst3Entry::Instance&>(*previewRenderer).setMusicTime(musicTime);
     }
 
     void completePreview()
@@ -646,6 +745,12 @@ void AraSession::updateLiveRendering(bool editingWithMouse)
     }
     if (current.previewJob.valid() && current.previewJob.wait_for(0ms) == std::future_status::ready)
         current.completePreview();
+    if (!current.previewJob.valid() && current.refreshMusicTime()) {
+        // ARA 和 VST3 共用同一张表，等后台渲染收工再一起换。
+        current.doc->beginEditing();
+        current.installMusicTime();
+        current.doc->endEditing();
+    }
 
     const auto restore = L"restore-" + std::to_wstring(current.completedRestore + 1);
     const auto restoreRequest = current.previewDirectory / (restore + L".request");
