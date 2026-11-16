@@ -8,7 +8,7 @@ While **Export Audio** is rendering, you can keep editing in Melodyne. BwARA app
 
 **Ctrl+S** in either window saves the edit. Bitwig's project-close prompt handles unsaved changes and closes Melodyne when the project closes. Keep the project media when moving the project. Reopen the editor from the same event to continue editing.
 
-You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. Deleting the bound event or its clip, or replacing the source, closes Melodyne. If the event becomes shared while editing, BwARA closes Melodyne before publishing or saving another edit. Save before deleting or replacing audio to keep the latest edits available if you undo the operation. Close Melodyne before splitting, copying, or undoing changes to the event.
+You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. You can also undo and redo a move along the same track in Bitwig while keeping the Melodyne edit active. Deleting the bound event or its clip, or replacing the source, closes Melodyne. If the event becomes shared while editing, BwARA closes Melodyne before publishing or saving another edit. Save before deleting or replacing audio to keep the latest edits available if you undo the operation. Close Melodyne before splitting, copying, or undoing other changes to the event.
 
 If an independent copy inherits a live preview WAV, the next edit on the original gets a new WAV. The copy plays the audio stored in its inherited WAV. Save before copying to carry over the latest edit.
 
