@@ -110,17 +110,21 @@ public final class BwAraActions implements ActionProvider {
 
     private static DyF owningClip(poA region) throws IOException {
         // 共用一个 WAV 很正常；共用事件本身才会让一次改音传到别的片段。
-        var content = region.xDy();
-        if (content != null) {
-            try (Stream<?> references = content.zzi()) {
-                var owners = references.limit(2).toList();
-                if (owners.size() > 1)
-                    throw new IOException("This audio event is shared by several clips. Edit an independent clip instead.");
-                if (owners.size() == 1 && owners.getFirst() instanceof DyF clip)
-                    return clip;
-            }
-        }
+        var owners = clipReferences(region);
+        if (owners.size() > 1)
+            throw new IOException("This audio event is shared by several clips. Edit an independent clip instead.");
+        if (owners.size() == 1 && owners.getFirst() instanceof DyF clip)
+            return clip;
         throw new IOException("Select an audio event in a unique Arranger clip.");
+    }
+
+    private static List<?> clipReferences(poA region) {
+        var content = region.xDy();
+        if (content == null)
+            return List.of();
+        try (Stream<?> references = content.zzi()) {
+            return references.limit(2).toList();
+        }
     }
 
     private static void edit(ActionContext context) {
@@ -437,6 +441,18 @@ public final class BwAraActions implements ActionProvider {
             return end == null;
         }
 
+        private boolean hasWritableTarget() {
+            if (!hasTarget())
+                return false;
+            // 查引用会遍历编曲区，只在发布音频或保存时做，播放光标不用跟着查。
+            var owners = clipReferences(selection.region());
+            if (owners.size() == 1 && owners.getFirst() == selection.event())
+                return true;
+            stop(End.TARGET_CHANGED);
+            Notifications.toast("Melodyne closed because the audio event no longer has a unique clip.");
+            return false;
+        }
+
         private void stop(End reason) {
             boolean alreadyStopping = end != null;
             end = reason;
@@ -503,36 +519,39 @@ public final class BwAraActions implements ActionProvider {
                 return;
 
             Path media = onUi(() -> {
-                if (!hasTarget() || selection.project().IDq())
+                if (!hasWritableTarget() || selection.project().IDq())
                     return null;
                 return selection.mediaDirectory();
             }).get();
             if (media == null)
                 return;
-            if (proxyRevision == 0) {
-                // 只给选中的事件换一份私有 WAV。共用原素材的邻居不应一起“被整容”。
-                var proxy = writeProjectMedia(media, newest, ThreadLocalRandom.current().nextInt(1024, 65536));
-                if (!onUi(() -> {
-                    if (!hasTarget() || selection.project().IDq())
-                        return false;
-                    attach(proxy);
-                    return true;
-                }).get())
-                    return;
-                proxyFrames = proxy.frames();
-                proxyRevision = newest;
-            }
-            if (end != null)
-                return;
+            // 只给选中的事件换一份私有 WAV。共用原素材的邻居不应一起“被整容”。
+            var proxy = proxyRevision == 0
+                ? writeProjectMedia(media, newest, ThreadLocalRandom.current().nextInt(1024, 65536)) : null;
+            long frames = proxy == null ? proxyFrames : proxy.frames();
+            long basis = proxy == null ? proxyRevision : newest;
             Path next = directory.resolve("engine-preview.next");
-            Files.writeString(next, newest + " " + proxyFrames + " " + proxyRevision + "\n",
-                StandardCharsets.US_ASCII);
+            Files.writeString(next, newest + " " + frames + " " + basis + "\n", StandardCharsets.US_ASCII);
             Path command = directory.resolve("engine-preview.txt");
-            try {
-                Files.move(next, command, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException error) {
-                Files.move(next, command, StandardCopyOption.REPLACE_EXISTING);
+            // 音频写盘期间可能出现新的引用。核对、挂素材和通知引擎放在同一个 UI 回合。
+            if (!onUi(() -> {
+                if (!hasWritableTarget() || selection.project().IDq())
+                    return false;
+                if (proxy != null)
+                    attach(proxy);
+                try {
+                    Files.move(next, command, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException error) {
+                    Files.move(next, command, StandardCopyOption.REPLACE_EXISTING);
+                }
+                return true;
+            }).get()) {
+                if (proxy != null)
+                    Files.deleteIfExists(proxy.path());
+                return;
             }
+            proxyFrames = frames;
+            proxyRevision = basis;
             revision = newest;
             engineRevision = newest;
             engineBasis = proxyRevision;
@@ -585,7 +604,7 @@ public final class BwAraActions implements ActionProvider {
         }
 
         private void checkpoint(long version, Runnable after) throws Exception {
-            Path media = onUi(() -> hasTarget() && version > storedRevision
+            Path media = onUi(() -> version > storedRevision && hasWritableTarget()
                 ? selection.mediaDirectory() : null).get();
             var saved = media == null ? null : writeProjectMedia(media, version, 0);
             long start = System.nanoTime();
@@ -596,7 +615,7 @@ public final class BwAraActions implements ActionProvider {
                     return true;
                 if (selection.project().IDq())
                     return false;
-                if (hasTarget() && saved != null) {
+                if (saved != null && hasWritableTarget()) {
                     attach(saved);
                     storedRevision = version;
                 }
