@@ -2,6 +2,8 @@ package org.bwara;
 
 import bitwig.obf.aCG;
 import bitwig.obf.aYN;
+import bitwig.obf.lKW;
+import bitwig.obf.rll;
 import bml.api.Arg;
 import bml.api.At;
 import bml.api.Hook;
@@ -34,6 +36,15 @@ public final class ProjectSave {
         context.remove();
         Runnable resume = () -> aYN.beI(save);
         if (target == null || !BwAraActions.deferSave(target.project(), resume, target.callback()))
+            resume.run();
+    }
+
+    @Hook(target = CmH.class, method = "Gef(Ljava/util/List;[Ljava/lang/String;ZZLzN;ZLXuP;ZLcEF;ZLT2r;DDLvT;Lyvd;ZZI)V",
+          at = At.REPLACE_CALL, callOwner = lKW.class, call = "Gef(Lrll;)V")
+    public static void dispatchAudioExport(lKW export, rll settings) {
+        // 路径和导出设置都已经选好了，先把最新改音挂进工程，再让 Bitwig 开始渲染。
+        Runnable resume = () -> export.Gef(settings);
+        if (!BwAraActions.deferAudioExport(export.Anf(), resume))
             resume.run();
     }
 

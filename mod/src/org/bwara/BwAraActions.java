@@ -223,7 +223,7 @@ public final class BwAraActions implements ActionProvider {
             var session = live;
             drf.EO().asyncExec(() -> {
                 if (session != null)
-                    session.failSaves(cause);
+                    session.failCheckpoints(cause);
                 report(cause);
             });
         } finally {
@@ -298,10 +298,18 @@ public final class BwAraActions implements ActionProvider {
     }
 
     static boolean deferSave(CmH project, Runnable resume, Pv callback) {
+        return deferCheckpoint(project, new CheckpointRequest(resume, "BwARA project save", callback));
+    }
+
+    static boolean deferAudioExport(CmH project, Runnable resume) {
+        return deferCheckpoint(project, new CheckpointRequest(resume, "BwARA audio export", null));
+    }
+
+    private static boolean deferCheckpoint(CmH project, CheckpointRequest request) {
         var session = active;
         if (session == null || session.selection.project() != project || session.end == End.PROJECT_CLOSED)
             return false;
-        session.saves.add(new SaveRequest(resume, callback));
+        session.checkpoints.add(request);
         return true;
     }
 
@@ -320,11 +328,11 @@ public final class BwAraActions implements ActionProvider {
             session.stop(End.PROJECT_CLOSED);
     }
 
-    private record SaveRequest(Runnable resume, Pv callback) {
+    private record CheckpointRequest(Runnable resume, String errorTitle, Pv callback) {
         void fail(Exception error) {
             String message = error.getMessage() == null ? error.toString() : error.getMessage();
-            MOD.log("Could not save Melodyne state with the project", error);
-            Notifications.post(Severity.ERROR, "BwARA project save", message);
+            MOD.log(errorTitle, error);
+            Notifications.post(Severity.ERROR, errorTitle, message);
             if (callback != null)
                 callback.beI(message);
         }
@@ -341,7 +349,7 @@ public final class BwAraActions implements ActionProvider {
         private final Path directory;
         private final Path original;
         private final Process editor;
-        private final LinkedBlockingQueue<SaveRequest> saves = new LinkedBlockingQueue<>();
+        private final LinkedBlockingQueue<CheckpointRequest> checkpoints = new LinkedBlockingQueue<>();
         // 下面三项只在 Bitwig UI 线程读写。
         private fRJ current;
         private long closeCheckToken;
@@ -374,7 +382,7 @@ public final class BwAraActions implements ActionProvider {
                         return null;
                     }).get();
                 }
-                SaveRequest request = saves.poll(30, TimeUnit.MILLISECONDS);
+                CheckpointRequest request = checkpoints.poll(30, TimeUnit.MILLISECONDS);
                 if (request == null) {
                     long latest = latestPreview();
                     publish(latest);
@@ -382,10 +390,10 @@ public final class BwAraActions implements ActionProvider {
                         consumePreview(latest);
                     continue;
                 }
+                long saved;
                 try {
-                    long saved = flush();
+                    saved = flush();
                     checkpoint(saved, request.resume());
-                    consumePreview(saved);
                 } catch (Exception error) {
                     onUi(() -> {
                         if (hasTarget())
@@ -394,7 +402,9 @@ public final class BwAraActions implements ActionProvider {
                             request.resume().run();
                         return null;
                     }).get();
+                    continue;
                 }
+                consumePreview(saved);
             }
             if (end != null) {
                 if (!editor.waitFor(2, TimeUnit.SECONDS))
@@ -405,7 +415,7 @@ public final class BwAraActions implements ActionProvider {
 
             checkpoint(end == null ? latestPreview() : 0, () -> {
                 active = null;
-                for (SaveRequest request; (request = saves.poll()) != null;)
+                for (CheckpointRequest request; (request = checkpoints.poll()) != null;)
                     request.resume().run();
             });
         }
@@ -458,10 +468,10 @@ public final class BwAraActions implements ActionProvider {
         private void stop(End reason) {
             boolean alreadyStopping = end != null;
             end = reason;
-            // 编辑对象变了，已经排队的工程保存还要继续。工程真关了才清队列。
+            // 编辑对象变了，已经排队的保存和导出还要继续。工程真关了才清队列。
             if (reason == End.PROJECT_CLOSED) {
                 active = null;
-                saves.clear();
+                checkpoints.clear();
             }
             if (alreadyStopping)
                 return;
@@ -474,10 +484,10 @@ public final class BwAraActions implements ActionProvider {
             }
         }
 
-        private void failSaves(Exception error) {
+        private void failCheckpoints(Exception error) {
             if (active == this)
                 active = null;
-            for (SaveRequest request; (request = saves.poll()) != null;)
+            for (CheckpointRequest request; (request = checkpoints.poll()) != null;)
                 request.fail(error);
         }
 
@@ -488,7 +498,7 @@ public final class BwAraActions implements ActionProvider {
             long start = System.nanoTime();
             while (end == null && editor.isAlive() && Files.notExists(response)) {
                 if (System.nanoTime() - start >= TimeUnit.SECONDS.toNanos(60))
-                    throw new IOException("Melodyne did not finish preparing the save. Try saving again.");
+                    throw new IOException("Melodyne did not finish preparing the edit. Try again.");
                 Thread.sleep(20);
             }
             if (end != null)
@@ -497,7 +507,7 @@ public final class BwAraActions implements ActionProvider {
                 return readRevision(response);
             if (editor.exitValue() == 0)
                 return latestPreview();
-            throw new IOException("Melodyne stopped before saving the edit. See " + directory.resolve(LOG));
+            throw new IOException("Melodyne stopped before preparing the edit. See " + directory.resolve(LOG));
         }
 
         private static long readRevision(Path response) throws IOException {
@@ -617,7 +627,7 @@ public final class BwAraActions implements ActionProvider {
                 ? selection.mediaDirectory() : null).get();
             var saved = media == null ? null : writeProjectMedia(media, version, 0);
             long start = System.nanoTime();
-            // 换入完整音频，再启动 Bitwig 自己的保存，必须同一个 UI 回合完成。
+            // 换入完整音频，再启动 Bitwig 的保存或导出，必须同一个 UI 回合完成。
             // 后台在这里等着，免得下一次预览抢先把引用换走。
             while (!onUi(() -> {
                 if (end == End.PROJECT_CLOSED)
@@ -632,7 +642,7 @@ public final class BwAraActions implements ActionProvider {
                 return true;
             }).get()) {
                 if (System.nanoTime() - start >= TimeUnit.SECONDS.toNanos(60))
-                    throw new IOException("Bitwig is still saving this project. Try saving again.");
+                    throw new IOException("Bitwig is still saving this project. Try again.");
                 Thread.sleep(30);
             }
             if (saved != null && end == null) {
