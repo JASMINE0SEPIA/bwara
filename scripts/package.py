@@ -56,7 +56,9 @@ def main():
         opens = {f"open-{n}": target for n, target in enumerate(found["access"])}
         targets = dict(opens)
         for hook in found["hooks"]:
-            hook.pop("helper_class")
+            helper_class = hook.pop("helper_class")
+            if helper_class != manifest["helper"]["class"]:
+                parser.error(f"hook {hook['id']} belongs to {helper_class}, but the manifest declares a different helper")
             target = f"{hook['id']}-target"
             targets[target] = hook["target"]
             hook["target"] = target

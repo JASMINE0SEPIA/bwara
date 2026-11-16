@@ -416,6 +416,7 @@ public final class BwAraActions implements ActionProvider {
                 return;
 
             checkpoint(end == null ? latestPreview() : 0, () -> {
+                WaveformPreview.clear(selection.region());
                 active = null;
                 for (CheckpointRequest request; (request = checkpoints.poll()) != null;)
                     request.resume().run();
@@ -470,6 +471,7 @@ public final class BwAraActions implements ActionProvider {
         private void stop(End reason) {
             boolean alreadyStopping = end != null;
             end = reason;
+            WaveformPreview.clear(selection.region());
             // 编辑对象变了，已经排队的保存和导出还要继续。工程真关了才清队列。
             if (reason == End.PROJECT_CLOSED) {
                 active = null;
@@ -487,8 +489,10 @@ public final class BwAraActions implements ActionProvider {
         }
 
         private void failCheckpoints(Exception error) {
-            if (active == this)
+            if (active == this) {
+                WaveformPreview.clear(selection.region());
                 active = null;
+            }
             for (CheckpointRequest request; (request = checkpoints.poll()) != null;)
                 request.fail(error);
         }
@@ -571,6 +575,22 @@ public final class BwAraActions implements ActionProvider {
             revision = newest;
             engineRevision = newest;
             engineBasis = proxyRevision;
+            if (proxy == null)
+                refreshWaveform(newest);
+        }
+
+        private void refreshWaveform(long version) throws InterruptedException {
+            Path wave = snapshot(version, ".wav");
+            try {
+                var analyzed = WaveformPreview.analyze(wave);
+                onUi(() -> {
+                    if (hasTarget())
+                        WaveformPreview.show(selection.region(), wave, analyzed);
+                    return null;
+                }).get();
+            } catch (RuntimeException | ExecutionException error) {
+                MOD.log("Could not refresh the Melodyne waveform", error);
+            }
         }
 
         private boolean proxyIsShared() {
@@ -686,6 +706,7 @@ public final class BwAraActions implements ActionProvider {
                 throw new IOException("The project media folder moved. Try saving again.");
             // 我们自己发布的素材接着认，外面换进来的素材才结束旧会话。
             current = selection.apply(media.path(), media.frames());
+            WaveformPreview.clear(selection.region());
         }
 
         private TransportSnapshot transport() {

@@ -2,6 +2,7 @@ package org.bwara;
 
 import bitwig.obf.aCG;
 import bitwig.obf.aYN;
+import bitwig.obf.bsy; // 编曲和编辑区的波形绘制器
 import bitwig.obf.lKW;
 import bitwig.obf.rll;
 import bml.api.Arg;
@@ -9,6 +10,8 @@ import bml.api.At;
 import bml.api.Hook;
 import com.bitwig.base.async.Pv;
 import com.bitwig.flt.app.gEH;
+import com.bitwig.flt.document.core.iface.blr;
+import com.bitwig.flt.document.core.iface.tIb;
 import com.bitwig.flt.document.core.master.CmH;
 
 public final class ProjectSave {
@@ -64,6 +67,12 @@ public final class ProjectSave {
         // “想关工程”和“真的关了”是两回事；窗口寿命跟着后者。
         if (document.Anf() instanceof CmH project)
             BwAraActions.closeEditor(project);
+    }
+
+    @Hook(target = bsy.class, method = "beI(LOHU;LCaY;LNWt;LMiQ;IDJJDDDDLeGp;LSZB;D)V", at = At.REPLACE_CALL,
+          callOwner = tIb.class, call = "MgQ()Lcom/bitwig/flt/document/core/iface/blr;")
+    public static blr clipWaveform(tIb binding) {
+        return WaveformPreview.forClip(binding);
     }
 
     static void fromEditor(CmH project) {
