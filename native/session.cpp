@@ -347,6 +347,7 @@ struct AraSession::State {
     unsigned long long publishedRevision = 0;
     unsigned long long completedSave = 0;
     unsigned long long completedCloseCheck = 0;
+    unsigned long long completedRestore = 0;
 
     bool audition = false;
 
@@ -371,17 +372,8 @@ struct AraSession::State {
         doc->endEditing();
         region = doc->getRef(playback);
 
-        if (!priorArchive.empty()) {
-            std::ifstream in(priorArchive, std::ios::binary);
-            require(in.is_open(), "Could not open edit archive.");
-            const std::string bytes{std::istreambuf_iterator<char>(in), {}};
-            require(!bytes.empty() && !in.bad(), "Could not read edit archive.");
-            MemoryArchive archive(bytes, entry.getARAFactory()->documentArchiveID);
-            doc->beginEditing();
-            const auto restored = doc->restoreObjectsFromArchive(&archive);
-            doc->endEditing();
-            require(restored, "The plugin could not restore its edit archive.");
-        }
+        if (!priorArchive.empty())
+            restoreArchive(priorArchive);
         doc->enableAudioSourceSamplesAccess(source, true);
 
         std::clog << "Initializing VST3 component\n";
@@ -429,6 +421,19 @@ struct AraSession::State {
         saved.exceptions(std::ios::badbit | std::ios::failbit);
         saved.write(bytes.data(), bytes.size());
         saved.close();
+    }
+
+    void restoreArchive(const fs::path& path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        require(in.is_open(), "Could not open edit archive.");
+        const std::string bytes{std::istreambuf_iterator<char>(in), {}};
+        require(!bytes.empty() && !in.bad(), "Could not read edit archive.");
+        MemoryArchive archive(bytes, entry.getARAFactory()->documentArchiveID);
+        doc->beginEditing();
+        const auto restored = doc->restoreObjectsFromArchive(&archive);
+        doc->endEditing();
+        require(restored, "The plugin could not restore its edit archive.");
     }
 
     fs::path previewPath(const wchar_t* extension) const
@@ -494,7 +499,10 @@ void AraSession::selectRegion()
 
 void AraSession::poll()
 {
-    state->doc->pollModelUpdates();
+    auto& current = *state;
+    current.doc->pollModelUpdates();
+    if (!current.previewDirectory.empty() && !current.doc->playbackRevision && current.doc->sourceChanged)
+        current.saveArchive(current.previewDirectory / "history-0.ara");
 }
 
 void AraSession::startTransport()
@@ -601,6 +609,7 @@ void AraSession::render(const fs::path& output, const fs::path& archive)
 void AraSession::beginLiveRendering(const fs::path& directory)
 {
     state->previewDirectory = directory;
+    state->saveArchive(directory / "history-0.ara");
 }
 
 bool AraSession::canRequestProjectSave() const
@@ -634,6 +643,24 @@ void AraSession::updateLiveRendering(bool editingWithMouse)
     }
     if (current.previewJob.valid() && current.previewJob.wait_for(0ms) == std::future_status::ready)
         current.completePreview();
+
+    const auto restore = L"restore-" + std::to_wstring(current.completedRestore + 1);
+    if (fs::exists(current.previewDirectory / (restore + L".request"))) {
+        if (current.previewJob.valid())
+            return;
+        unsigned long long version = 0;
+        require(static_cast<bool>(std::ifstream(current.previewDirectory / (restore + L".request")) >> version),
+                "Could not read Melodyne history request.");
+        current.restoreArchive(current.previewDirectory / (L"history-" + std::to_wstring(version) + L".ara"));
+        selectRegion();
+        // 这是 Bitwig 恢复旧版本，不是一笔新改音。收掉这次恢复带来的通知。
+        current.doc->pollModelUpdates();
+        current.observedRevision = current.doc->playbackRevision;
+        current.renderingRevision = current.observedRevision;
+        current.replyWithRevision(restore);
+        ++current.completedRestore;
+        return;
+    }
 
     const auto token = current.completedSave + 1;
     const auto stem = L"save-" + std::to_wstring(token);

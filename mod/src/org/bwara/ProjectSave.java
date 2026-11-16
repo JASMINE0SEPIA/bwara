@@ -3,11 +3,13 @@ package org.bwara;
 import bitwig.obf.aCG;
 import bitwig.obf.aYN;
 import bitwig.obf.bsy; // 编曲和编辑区的波形绘制器
+import bitwig.obf.dgR; // Bitwig 工程的撤销管理器
 import bitwig.obf.lKW;
 import bitwig.obf.rll;
 import bml.api.Arg;
 import bml.api.At;
 import bml.api.Hook;
+import bml.api.This;
 import com.bitwig.base.async.Pv;
 import com.bitwig.flt.app.gEH;
 import com.bitwig.flt.document.core.iface.blr;
@@ -73,6 +75,16 @@ public final class ProjectSave {
           callOwner = tIb.class, call = "MgQ()Lcom/bitwig/flt/document/core/iface/blr;")
     public static blr clipWaveform(tIb binding) {
         return WaveformPreview.forClip(binding);
+    }
+
+    @Hook(target = dgR.class, method = "mEL()V", at = At.BEFORE_RETURN)
+    public static void afterUndo(@This dgR history) {
+        BwAraActions.restoreEdit(history);
+    }
+
+    @Hook(target = dgR.class, method = "LYs()V", at = At.BEFORE_RETURN)
+    public static void afterRedo(@This dgR history) {
+        BwAraActions.restoreEdit(history);
     }
 
     static void fromEditor(CmH project) {

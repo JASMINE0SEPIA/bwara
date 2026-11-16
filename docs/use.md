@@ -8,7 +8,9 @@ While **Export Audio** is rendering, you can keep editing in Melodyne. BwARA app
 
 **Ctrl+S** in either window saves the edit. Bitwig's project-close prompt handles unsaved changes and closes Melodyne when the project closes. Keep the project media when moving the project. Reopen the editor from the same event to continue editing.
 
-You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. You can also undo and redo a move along the same track in Bitwig while keeping the Melodyne edit active. Deleting the bound event or its clip, or replacing the source, closes Melodyne. If the event becomes shared while editing, BwARA closes Melodyne before publishing or saving another edit. Save before deleting or replacing audio to keep the latest edits available if you undo the operation. Close Melodyne before splitting, copying, or undoing other changes to the event.
+An applied Melodyne edit appears in Bitwig's **Edit** menu as **Apply Melodyne Edit**. Undo or redo it there to restore the audio, waveform, and notes in the open Melodyne window. Keyboard shortcuts go to the focused window.
+
+You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. You can also undo and redo a move along the same track in Bitwig while keeping the Melodyne edit active. Deleting the bound event or its clip, or replacing the source, closes Melodyne. If the event becomes shared while editing, BwARA closes Melodyne before publishing or saving another edit. Close Melodyne before splitting, copying, or undoing other changes to the event.
 
 If an independent copy inherits a live preview WAV, the next edit on the original gets a new WAV. The copy plays the audio stored in its inherited WAV. Save before copying to carry over the latest edit.
 
@@ -16,4 +18,4 @@ Melodyne follows Bitwig's transport. Use Space to start or stop Bitwig, or doubl
 
 In a single Bitwig window, select **Melodyne** to dock the open editor. Switching tabs returns it to a resizable floating window behind Bitwig. Use Alt+Tab or the taskbar to bring it forward.
 
-Live preview files are recycled during editing. Error sessions are retained for seven days and reclaimed on a later launch of the editor. Project media remains available for undo and older project saves.
+Live preview files are recycled during editing. Error sessions are retained for seven days and reclaimed on a later launch of the editor. Each applied edit leaves a WAV snapshot in the project media for undo and older project saves.

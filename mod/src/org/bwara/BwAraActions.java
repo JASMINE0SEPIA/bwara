@@ -2,6 +2,7 @@ package org.bwara;
 
 import bitwig.obf.DyF; // 编曲区片段实例
 import bitwig.obf.bju; // 时间线选区
+import bitwig.obf.dgR; // Bitwig 工程的撤销管理器
 import bitwig.obf.drf; // Bitwig 的 UI 事件循环
 import bitwig.obf.eOj; // 编曲区片段容器
 import bitwig.obf.er; // 把工程位置映射到片段内部，包含偏移和循环
@@ -33,6 +34,7 @@ import java.nio.file.NoSuchFileException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -340,10 +342,16 @@ public final class BwAraActions implements ActionProvider {
     }
 
     private record ProjectMedia(Path path, long frames) {}
-    private record PreviewTarget(Path media, boolean needsProxy) {}
+    private record Restore(long version) {}
+
+    static void restoreEdit(dgR history) {
+        var session = active;
+        if (session != null && session.selection.project().Wtv() == history)
+            session.restoreEdit();
+    }
 
     private enum End { TARGET_CHANGED, PROJECT_CLOSED }
-    private enum CheckpointStatus { COMPLETE, EXPORTING, SAVING }
+    private enum CheckpointStatus { COMPLETE, ATTACHED, EXPORTING, SAVING }
 
     private static final class LiveSelection {
         // 一次会话只认一个工程、一个事件。工程对象只在 UI 线程碰，文件工作交给后台。
@@ -352,19 +360,19 @@ public final class BwAraActions implements ActionProvider {
         private final Path original;
         private final Process editor;
         private final LinkedBlockingQueue<CheckpointRequest> checkpoints = new LinkedBlockingQueue<>();
-        // 下面三项只在 Bitwig UI 线程读写。
+        // 撤销可能重建素材对象，用这个会话挂过的路径找成对的 ARA 存档。
+        private final HashMap<Path, Long> history = new HashMap<>();
         private fRJ current;
         private long closeCheckToken;
         private long storedRevision;
         private volatile End end;
+        private volatile Restore restoring;
         // 后台线程拥有这些版本号；0 表示还没有，不是“第零次改音”。
         private long revision;      // 已通知引擎的版本
-        private long proxyRevision; // 当前私有 WAV 对应的基准版本，供引擎核对 PCM
-        private long proxyFrames;
         private int nextProxyPadding = ThreadLocalRandom.current().nextInt(1024, 65536);
         private long saveToken;
+        private long restoreToken;
         private long engineRevision;
-        private long engineBasis;
         private long consumedRevision;
 
         private LiveSelection(Selection selection, Path directory, Path original, Process editor) {
@@ -373,10 +381,16 @@ public final class BwAraActions implements ActionProvider {
             this.original = original;
             this.editor = editor;
             current = selection.asset();
+            history.put(assetPath(current), 0L);
         }
 
         private void run() throws Exception {
             while (end == null && editor.isAlive()) {
+                var restore = restoring;
+                if (restore != null) {
+                    restoreArchive(restore);
+                    continue;
+                }
                 if (Files.deleteIfExists(directory.resolve("save-shortcut"))) {
                     onUi(() -> {
                         if (end != End.PROJECT_CLOSED)
@@ -415,7 +429,7 @@ public final class BwAraActions implements ActionProvider {
             if (end == End.PROJECT_CLOSED)
                 return;
 
-            checkpoint(end == null ? latestPreview() : 0, () -> {
+            checkpoint(end == null && restoring == null ? latestPreview() : 0, () -> {
                 WaveformPreview.clear(selection.region());
                 active = null;
                 for (CheckpointRequest request; (request = checkpoints.poll()) != null;)
@@ -424,6 +438,8 @@ public final class BwAraActions implements ActionProvider {
         }
 
         private boolean hasPendingEdit() {
+            if (restoring != null)
+                return false; // 声音已经由 Bitwig 恢复，先前正在渲染的编辑不会再发布。
             // 问的是“改没改”，不是“渲染完没完”。刚拖完音符就关工程，也得算数。
             Path query = directory.resolve("close-check-" + (closeCheckToken + 1));
             try {
@@ -454,6 +470,54 @@ public final class BwAraActions implements ActionProvider {
             if (end == null && !selection.matches(current))
                 stop(End.TARGET_CHANGED);
             return end == null;
+        }
+
+        private static Path assetPath(fRJ asset) {
+            return asset == null || asset.tWW() == null ? null : asset.tWW().toPath().toAbsolutePath().normalize();
+        }
+
+        private void restoreEdit() {
+            var restored = selection.region().GKF();
+            if (end != null || restored == current || !selection.matches(restored))
+                return;
+            var version = history.get(assetPath(restored));
+            var owners = clipReferences(selection.region());
+            if (version == null || owners.size() != 1 || owners.getFirst() != selection.event())
+                return;
+            current = restored;
+            WaveformPreview.clear(selection.region());
+            restoring = new Restore(version);
+        }
+
+        private void restoreArchive(Restore restore) throws Exception {
+            String stem = "restore-" + ++restoreToken;
+            Path request = directory.resolve(stem + ".request");
+            Path ready = directory.resolve(stem + ".ready");
+            Path temporary = request.resolveSibling(stem + ".partial");
+            Files.writeString(temporary, Long.toString(restore.version()), StandardCharsets.US_ASCII);
+            moveIntoPlace(temporary, request);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+            while (end == null && editor.isAlive() && Files.notExists(ready)) {
+                if (System.nanoTime() >= deadline)
+                    throw new IOException("Melodyne did not restore the edit.");
+                Thread.sleep(20);
+            }
+            if (end != null)
+                return;
+            if (Files.notExists(ready))
+                throw new IOException("Melodyne stopped while restoring the edit.");
+            long cutoff = readRevision(ready);
+            revision = Math.max(revision, cutoff);
+            onUi(() -> {
+                if (restoring == restore) {
+                    storedRevision = cutoff;
+                    restoring = null;
+                }
+                return null;
+            }).get();
+            consumePreview(cutoff);
+            Files.delete(request);
+            Files.delete(ready);
         }
 
         private boolean hasWritableTarget() {
@@ -536,47 +600,32 @@ public final class BwAraActions implements ActionProvider {
             if (newest <= revision)
                 return;
 
-            PreviewTarget target = onUi(() -> {
-                if (audioExportRunning() || !hasWritableTarget() || selection.project().IDq())
+            Path media = onUi(() -> {
+                if (restoring != null || audioExportRunning() || !hasWritableTarget() || selection.project().IDq())
                     return null;
-                return new PreviewTarget(selection.mediaDirectory(), proxyRevision == 0 || proxyIsShared());
+                return selection.mediaDirectory();
             }).get();
-            if (target == null)
+            if (media == null)
                 return;
-            // 复制可能带走旧代理。每份新代理都使用不同的长度，旧副本会回到文件里那一版。
-            var proxy = target.needsProxy() ? writeProjectMedia(target.media(), newest, nextProxyPadding++) : null;
-            long frames = proxy == null ? proxyFrames : proxy.frames();
-            long basis = proxy == null ? proxyRevision : newest;
+            // 一笔改音就是一次 Bitwig 素材事务。历史版本保持原样，撤销时连声音一起回来。
+            var proxy = writeProjectMedia(media, newest, nextProxyPadding++);
             Path next = directory.resolve("engine-preview.next");
-            Files.writeString(next, newest + " " + frames + " " + basis + "\n", StandardCharsets.US_ASCII);
+            Files.writeString(next, newest + " " + proxy.frames() + " " + newest + "\n", StandardCharsets.US_ASCII);
             Path command = directory.resolve("engine-preview.txt");
-            // 音频写盘期间可能出现新的引用。核对、挂素材和通知引擎放在同一个 UI 回合。
             if (!onUi(() -> {
-                if (audioExportRunning() || !hasWritableTarget() || selection.project().IDq())
+                if (newest <= storedRevision || restoring != null || audioExportRunning()
+                        || !hasWritableTarget() || selection.project().IDq())
                     return false;
-                // 刚才准备命令时若又多了一个引用，下轮先做新代理再发这版音频。
-                if (proxy == null && proxyIsShared())
-                    return false;
-                if (proxy != null)
-                    attach(proxy);
-                try {
-                    Files.move(next, command, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                } catch (AtomicMoveNotSupportedException error) {
-                    Files.move(next, command, StandardCopyOption.REPLACE_EXISTING);
-                }
+                attach(proxy, newest);
+                moveIntoPlace(next, command);
                 return true;
             }).get()) {
-                if (proxy != null)
-                    Files.deleteIfExists(proxy.path());
+                Files.deleteIfExists(proxy.path());
                 return;
             }
-            proxyFrames = frames;
-            proxyRevision = basis;
             revision = newest;
             engineRevision = newest;
-            engineBasis = proxyRevision;
-            if (proxy == null)
-                refreshWaveform(newest);
+            refreshWaveform(newest);
         }
 
         private void refreshWaveform(long version) throws InterruptedException {
@@ -584,7 +633,7 @@ public final class BwAraActions implements ActionProvider {
             try {
                 var analyzed = WaveformPreview.analyze(wave);
                 onUi(() -> {
-                    if (hasTarget())
+                    if (hasTarget() && restoring == null)
                         WaveformPreview.show(selection.region(), wave, analyzed);
                     return null;
                 }).get();
@@ -593,15 +642,18 @@ public final class BwAraActions implements ActionProvider {
             }
         }
 
-        private boolean proxyIsShared() {
-            var references = current.BZt; // Bitwig 会登记和解除素材的 glu 引用。
-            return references != null && references.size() > 1;
+        private static void moveIntoPlace(Path next, Path destination) throws IOException {
+            try {
+                Files.move(next, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException error) {
+                Files.move(next, destination, StandardCopyOption.REPLACE_EXISTING);
+            }
         }
 
         private void consumePreview(long version) throws IOException {
             if (version <= consumedRevision || end != null)
                 return;
-            // 保留引擎命令引用的两份文件，方便它在重启后重新接入。
+            // 保留引擎命令引用的预览，方便它在重启后重新接入。
             // 保存与发布共用此工作线程，不会在复制过程中删掉同一份快照。
             long newest = latestPreview();
             try (var files = Files.newDirectoryStream(directory, "preview-*")) {
@@ -610,7 +662,7 @@ public final class BwAraActions implements ActionProvider {
                     if (!name.endsWith(".wav") && !name.endsWith(".ara"))
                         continue;
                     long candidate = Long.parseLong(name.substring(8, name.length() - 4));
-                    if (candidate < newest && candidate != engineRevision && candidate != engineBasis) {
+                    if (candidate < newest && candidate != engineRevision) {
                         try {
                             Files.deleteIfExists(file);
                         } catch (IOException ignored) {
@@ -645,7 +697,7 @@ public final class BwAraActions implements ActionProvider {
         }
 
         private void checkpoint(long version, Runnable after) throws Exception {
-            Path media = onUi(() -> version > storedRevision && hasWritableTarget()
+            Path media = onUi(() -> version > storedRevision && restoring == null && hasWritableTarget()
                 ? selection.mediaDirectory() : null).get();
             var saved = media == null ? null : writeProjectMedia(media, version, 0);
             long saveTimeout = TimeUnit.SECONDS.toNanos(60);
@@ -660,13 +712,12 @@ public final class BwAraActions implements ActionProvider {
                     return CheckpointStatus.EXPORTING;
                 if (selection.project().IDq())
                     return CheckpointStatus.SAVING;
-                if (saved != null && hasWritableTarget()) {
-                    attach(saved);
-                    storedRevision = version;
-                }
+                boolean applied = saved != null && version > storedRevision && restoring == null && hasWritableTarget();
+                if (applied)
+                    attach(saved, version);
                 after.run();
-                return CheckpointStatus.COMPLETE;
-            }).get()) != CheckpointStatus.COMPLETE) {
+                return applied ? CheckpointStatus.ATTACHED : CheckpointStatus.COMPLETE;
+            }).get()) != CheckpointStatus.COMPLETE && status != CheckpointStatus.ATTACHED) {
                 // 正常导出可以超过一分钟。等它结束，再给工程保存自己的等待时间。
                 if (status == CheckpointStatus.EXPORTING)
                     saveDeadline = System.nanoTime() + saveTimeout;
@@ -674,11 +725,10 @@ public final class BwAraActions implements ActionProvider {
                     throw new IOException("Bitwig is still saving this project. Try again.");
                 Thread.sleep(30);
             }
-            if (saved != null && end == null) {
-                // 已保存的 WAV 就此封存。继续改音时另建代理，磁盘上的存档不追着编辑跑。
-                proxyRevision = 0;
-                revision = version;
-            }
+            if (status == CheckpointStatus.ATTACHED)
+                revision = Math.max(revision, version);
+            else if (saved != null)
+                Files.deleteIfExists(saved.path());
         }
 
         private boolean audioExportRunning() {
@@ -694,6 +744,8 @@ public final class BwAraActions implements ActionProvider {
                 Files.copy(snapshot(version, ".wav"), temporary, StandardCopyOption.REPLACE_EXISTING);
                 long frames = TakeAudio.padPreview(temporary, padding);
                 TakeAudio.embed(temporary, original, snapshot(version, ".ara"));
+                Files.copy(snapshot(version, ".ara"), directory.resolve("history-" + version + ".ara"),
+                    StandardCopyOption.REPLACE_EXISTING);
                 Files.move(temporary, published);
                 return new ProjectMedia(published, frames);
             } finally {
@@ -701,11 +753,13 @@ public final class BwAraActions implements ActionProvider {
             }
         }
 
-        private void attach(ProjectMedia media) throws IOException {
+        private void attach(ProjectMedia media, long version) throws IOException {
             if (!selection.mediaDirectory().equals(media.path().getParent()))
                 throw new IOException("The project media folder moved. Try saving again.");
             // 我们自己发布的素材接着认，外面换进来的素材才结束旧会话。
             current = selection.apply(media.path(), media.frames());
+            history.put(assetPath(current), version);
+            storedRevision = version;
             WaveformPreview.clear(selection.region());
         }
 
