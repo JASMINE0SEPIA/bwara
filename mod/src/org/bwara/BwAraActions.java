@@ -331,6 +331,7 @@ public final class BwAraActions implements ActionProvider {
     }
 
     private record ProjectMedia(Path path, long frames) {}
+    private record PreviewTarget(Path media, boolean needsProxy) {}
 
     private enum End { TARGET_CHANGED, PROJECT_CLOSED }
 
@@ -350,6 +351,7 @@ public final class BwAraActions implements ActionProvider {
         private long revision;      // 已通知引擎的版本
         private long proxyRevision; // 当前私有 WAV 对应的基准版本，供引擎核对 PCM
         private long proxyFrames;
+        private int nextProxyPadding = ThreadLocalRandom.current().nextInt(1024, 65536);
         private long saveToken;
         private long engineRevision;
         private long engineBasis;
@@ -518,16 +520,15 @@ public final class BwAraActions implements ActionProvider {
             if (newest <= revision)
                 return;
 
-            Path media = onUi(() -> {
+            PreviewTarget target = onUi(() -> {
                 if (!hasWritableTarget() || selection.project().IDq())
                     return null;
-                return selection.mediaDirectory();
+                return new PreviewTarget(selection.mediaDirectory(), proxyRevision == 0 || proxyIsShared());
             }).get();
-            if (media == null)
+            if (target == null)
                 return;
-            // 只给选中的事件换一份私有 WAV。共用原素材的邻居不应一起“被整容”。
-            var proxy = proxyRevision == 0
-                ? writeProjectMedia(media, newest, ThreadLocalRandom.current().nextInt(1024, 65536)) : null;
+            // 复制可能带走旧代理。每份新代理都使用不同的长度，旧副本会回到文件里那一版。
+            var proxy = target.needsProxy() ? writeProjectMedia(target.media(), newest, nextProxyPadding++) : null;
             long frames = proxy == null ? proxyFrames : proxy.frames();
             long basis = proxy == null ? proxyRevision : newest;
             Path next = directory.resolve("engine-preview.next");
@@ -536,6 +537,9 @@ public final class BwAraActions implements ActionProvider {
             // 音频写盘期间可能出现新的引用。核对、挂素材和通知引擎放在同一个 UI 回合。
             if (!onUi(() -> {
                 if (!hasWritableTarget() || selection.project().IDq())
+                    return false;
+                // 刚才准备命令时若又多了一个引用，下轮先做新代理再发这版音频。
+                if (proxy == null && proxyIsShared())
                     return false;
                 if (proxy != null)
                     attach(proxy);
@@ -555,6 +559,11 @@ public final class BwAraActions implements ActionProvider {
             revision = newest;
             engineRevision = newest;
             engineBasis = proxyRevision;
+        }
+
+        private boolean proxyIsShared() {
+            var references = current.BZt; // Bitwig 会登记和解除素材的 glu 引用。
+            return references != null && references.size() > 1;
         }
 
         private void consumePreview(long version) throws IOException {

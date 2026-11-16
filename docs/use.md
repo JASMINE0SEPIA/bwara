@@ -8,6 +8,8 @@ With the audio engine active, right-click an Arranger audio event backed by a lo
 
 You can move or trim the bound clip or audio event while the editor is open, provided it still contains the same event and source. Deleting the bound event or its clip, or replacing the source, closes Melodyne. If the event becomes shared while editing, BwARA closes Melodyne before publishing or saving another edit. Save before deleting or replacing audio to keep the latest edits available if you undo the operation. Close Melodyne before splitting, copying, or undoing changes to the event.
 
+If an independent copy inherits a live preview WAV, the next edit on the original gets a new WAV. The copy plays the audio stored in its inherited WAV. Save before copying to carry over the latest edit.
+
 Melodyne follows Bitwig's transport. Use Space to start or stop Bitwig, or double-click the Melodyne ruler to play from that position. With Bitwig stopped, double-click the note editor background to audition through the Windows default output.
 
 In a single Bitwig window, the experimental **Melodyne** panel docks the open editor when its tab is visible and large enough. Switch to another tab to float it again.
