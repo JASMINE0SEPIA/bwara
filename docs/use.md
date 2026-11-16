@@ -14,6 +14,6 @@ If an independent copy inherits a live preview WAV, the next edit on the origina
 
 Melodyne follows Bitwig's transport. Use Space to start or stop Bitwig, or double-click the Melodyne ruler to play from that position. With Bitwig stopped, double-click the note editor background to audition through the Windows default output.
 
-In a single Bitwig window, the experimental **Melodyne** panel docks the open editor when its tab is visible and large enough. Switch to another tab to float it again.
+In a single Bitwig window, select **Melodyne** to dock the open editor. Switching tabs returns it to a resizable floating window behind Bitwig. Use Alt+Tab or the taskbar to bring it forward.
 
 Live preview files are recycled during editing. Error sessions are retained for seven days and reclaimed on a later launch of the editor. Project media remains available for undo and older project saves.

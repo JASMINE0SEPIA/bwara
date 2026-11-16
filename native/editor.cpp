@@ -157,28 +157,40 @@ struct Window {
         }
         if (!target && !frame->docked)
             return;
-        if (target && frame->docked && EqualRect(&bounds, &dockBounds))
+        const bool alreadyDocked = target && frame->docked && IsWindowVisible(hwnd);
+        if (alreadyDocked && EqualRect(&bounds, &dockBounds))
             return;
         // 原型只认唯一的 Bitwig 主窗。多开窗口时留在悬浮状态，避免钻进隔壁工程。
         if (target && !frame->docked && bitwigOwner(bitwigPid, false) != target)
             return;
         if (target && !frame->docked) {
+            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(target));
+            if (GetWindow(hwnd, GW_OWNER) != target)
+                return;
             if (IsZoomed(hwnd))
                 ShowWindow(hwnd, SW_RESTORE);
             GetWindowRect(hwnd, &floatingBounds);
-            // Bitwig 自己绘制面板；让同一个拥有者窗口对齐到面板里，保留编辑器和焦点链。
+            // 贴靠时才借 Bitwig 的层级。悬浮时谁在前面由用户决定。
             frame->docked = true;
-            SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP | WS_CLIPCHILDREN | WS_VISIBLE);
+            SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP | WS_CLIPCHILDREN);
             std::clog << "Melodyne docked\n";
         } else if (!target) {
+            SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+            if (GetWindow(hwnd, GW_OWNER)) {
+                // 前面已经换了标签页，先让路，下轮再试着恢复成浮窗。
+                ShowWindow(hwnd, SW_HIDE);
+                return;
+            }
             frame->docked = false;
-            SetWindowLongPtrW(hwnd, GWL_STYLE, floatingStyle() | WS_VISIBLE);
+            SetWindowLongPtrW(hwnd, GWL_STYLE, floatingStyle());
             bounds = floatingBounds;
             std::clog << "Melodyne floated\n";
         }
         dockBounds = bounds;
-        SetWindowPos(hwnd, HWND_TOP, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
-                     SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        // 从贴靠退出时把浮窗放回 Bitwig 后面，切到的新标签页马上就能操作。
+        const auto insertAfter = target ? HWND_TOP : (IsWindow(owner) ? owner : HWND_BOTTOM);
+        SetWindowPos(hwnd, insertAfter, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                     SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW | (alreadyDocked ? SWP_NOZORDER : 0));
     }
 
     DWORD floatingStyle() const
@@ -423,7 +435,7 @@ void editInWindow(AraSession& session, bool followTransport, const std::filesyst
     window.owner = bitwigOwner(bitwigPid, true);
     const auto hwnd = CreateWindowExW(WS_EX_APPWINDOW, kind.lpszClassName, L"Melodyne - BwARA",
         window.floatingStyle(),
-        CW_USEDEFAULT, CW_USEDEFAULT, 870, 630, window.owner, nullptr, program, &window);
+        CW_USEDEFAULT, CW_USEDEFAULT, 870, 630, nullptr, nullptr, program, &window);
     if (!hwnd)
         throw std::runtime_error("Could not create the editor window.");
     window.frame->container = CreateWindowExW(0, L"STATIC", nullptr, WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
